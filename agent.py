@@ -7,6 +7,7 @@ import time
 import traceback
 from openai import OpenAI
 from session import SessionManager
+from cron_engine import CronManager
 from skill_engine import SkillEngine
 
 # 记忆引擎 (可选 — 缺失时优雅降级)
@@ -87,6 +88,9 @@ class Agent:
             self.memory.start_distill_scheduler(interval_hours=24)
             print("  ✅ 记忆引擎已启用")
 
+        # 定时任务引擎
+        self.cron = CronManager()
+
         # 系统提示词
         self.system_prompt = self._build_system_prompt()
 
@@ -132,6 +136,7 @@ class Agent:
         """处理 /new /status /history /stop /help 等内置指令"""
         parts = msg.text.strip().split()
         cmd = parts[0].lower()
+        args = parts[1:]
 
         if cmd == "/new":
             self.session_mgr.reset_session(msg.session_key)
@@ -213,13 +218,14 @@ class Agent:
             type_lines = "\n".join(
                 f"  {t}: {c} 条" for t, c in type_stats.items()
             )
+            type_suffix = f"\n四维分布:\n{type_lines}" if type_lines else ''
             return AgentResponse(
                 f"**记忆池状态**\n"
                 f"总消息: {stats['total_messages']}\n"
                 f"蒸馏产物: {stats['distilled']}\n"
                 f"平均质量分: {stats['avg_importance']}\n"
-                f"用户数: {stats['users']}\n"
-                f"四维分布:\n{type_lines}" if type_lines else '',
+                f"用户数: {stats['users']}"
+                f"{type_suffix}",
                 title="🧠 记忆池", color="blue"
             )
 
@@ -249,6 +255,25 @@ class Agent:
                 title="🧠 已记忆", color="green"
             )
 
+        if cmd == "/cron":
+            if not args:
+                return AgentResponse(self.cron.list_jobs(), title="📅 定时任务", color="blue")
+            if args[0] == "toggle" and len(args) > 1:
+                try:
+                    job_id = int(args[1])
+                except ValueError:
+                    return AgentResponse("序号必须是数字", title="⚠️", color="red")
+                return AgentResponse(self.cron.toggle_job(job_id), title="📅 定时任务", color="blue")
+            # /cron <序号> → 手动执行
+            try:
+                job_id = int(args[0])
+            except ValueError:
+                return AgentResponse(
+                    "用法:\n`/cron` — 列出所有任务\n`/cron <序号>` — 手动执行\n`/cron toggle <序号>` — 开启/暂停",
+                    title="📅 定时任务", color="grey"
+                )
+            return AgentResponse(self.cron.run_job_manually(job_id), title="🚀 手动执行", color="green")
+
         if cmd == "/help":
             skills_list = self.skill_engine.list_skills()
             help_text = f"""**内置指令:**
@@ -259,6 +284,7 @@ class Agent:
 `/help` - 显示帮助
 `/balance` - 查询大模型账户余额
 `/memory` - 查看记忆池状态
+`/cron` - 查看定时任务列表，`/cron <序号>` 手动执行，`/cron toggle <序号>` 开关
 `/ai` - 强行调用 AI（适用于飞书只能接收命令的场景，如 `/ai 查一下账单`）
 `/cmd` - 精确执行账单旧版指令（不经过 AI，如 `/cmd report 3` 或 `/cmd fetch`）
 

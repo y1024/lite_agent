@@ -36,6 +36,44 @@ def session_cleanup_task(agent: Agent, interval: int = 300):
             print(f"⚠️ 清理任务异常: {e}")
 
 
+def _register_cron_jobs(agent: Agent):
+    """注册系统定时任务到 CronManager"""
+    import subprocess
+
+    cron = agent.cron
+
+    # 1. 证书过期检查 — 每天 09:00
+    def check_cert():
+        r = subprocess.run("bash /root/down/check_cert_expiry.sh",
+                           shell=True, capture_output=True, text=True, timeout=30)
+        return r.stdout.strip() or r.stderr.strip() or "(无输出)"
+
+    cron.add_job("证书过期检查", "09:00", check_cert)
+
+    # 2. 记忆蒸馏复盘 — 每天 03:00
+    def daily_distill():
+        r = subprocess.run(
+            "python3 /root/lite_agent/skills/ops_memory_distiller.py --mode daily",
+            shell=True, capture_output=True, text=True, timeout=120)
+        return r.stdout.strip() or r.stderr.strip() or "(无输出)"
+
+    cron.add_job("记忆蒸馏复盘", "03:00", daily_distill)
+
+    # 3. 系统状态巡检 — 每天 08:00
+    def sys_status():
+        r = subprocess.run(
+            "python3 -c \"import sys; sys.path.insert(0,'/root/lite_agent'); "
+            "from skills.ops_sys import ops_sys_status; print(ops_sys_status(detail=True))\"",
+            shell=True, capture_output=True, text=True, timeout=15)
+        return r.stdout.strip() or r.stderr.strip() or "(无输出)"
+
+    cron.add_job("系统状态巡检", "08:00", sys_status)
+
+    # 启动 Cron 引擎后台线程
+    cron.start()
+    print(f"📅 定时任务引擎就绪: 共注册 {len(cron.jobs)} 个任务")
+
+
 def main():
     print("🤖 正在启动 Lite Agent...")
     config = load_config()
@@ -68,10 +106,21 @@ def main():
         tg_channel.start()
         channels.append(tg_channel)
         
+    # -- DingTalk 通道 --
+    dt_cfg = config.get('channels', {}).get('dingtalk', {})
+    if dt_cfg.get('enabled'):
+        from channels.dingtalk import DingTalkChannel
+        dt_channel = DingTalkChannel(dt_cfg, agent)
+        dt_channel.start()
+        channels.append(dt_channel)
+
     if not channels:
-        print("⚠️ 没有启用任何通信通道，程序将退出")
+        print("⚠️ 没有启用任何通信通道，程序将退出。")
         return
-        
+
+    # 4. 注册定时任务并启动 Cron 引擎
+    _register_cron_jobs(agent)
+
     print("✨ Lite Agent 启动完成！按 Ctrl+C 停止")
     
     # 保持主线程运行
