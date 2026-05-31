@@ -8,3 +8,5 @@ wheels/
 hf_cache/
 data/
 *.whl
+deploy*.sh
+
