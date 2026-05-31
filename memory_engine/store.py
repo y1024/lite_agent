@@ -158,7 +158,7 @@ class MemoryStore:
         row_id = cur.lastrowid
 
         # 写入向量库
-        if self._chroma_ready and role in ('user', 'bot'):
+        if self.chroma and role in ('user', 'bot', 'system'):
             try:
                 embeddings = self._embedding_function([content])
                 self._collection.add(
