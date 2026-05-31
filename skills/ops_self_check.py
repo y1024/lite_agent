@@ -89,7 +89,7 @@ def _get_health_report() -> str:
         report.append("🗄️ **会话数据库 (SQLite)**: ⚠️ 文件暂未创建 (暂无记录)")
 
     # 5. 记忆引擎 (ChromaDB + JSONL)
-    memory_path = os.path.join(base_dir, 'data', 'memory')
+    memory_path = os.path.join(base_dir, 'data', 'chroma')
     if os.path.exists(memory_path):
         db_size = sum(os.path.getsize(os.path.join(dp, f)) for dp, dn, filenames in os.walk(memory_path) for f in filenames) / 1024 / 1024
         report.append(f"🧠 **长期记忆向量库 (Chroma)**: ✅ 正常挂载 (占用: {db_size:.2f} MB)")
