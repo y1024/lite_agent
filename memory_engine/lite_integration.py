@@ -100,7 +100,7 @@ class AgentMemory:
                 time.sleep(interval_hours * 3600)
                 try:
                     with self._lock:
-                        summary = self.engine.daily_distill(since_hours=interval_hours)
+                        summary = self.engine.distill_rules()
                     if summary:
                         print(f'[记忆蒸馏] 完成: {len(summary)} 字符')
                 except Exception as e:

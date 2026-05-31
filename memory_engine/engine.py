@@ -39,6 +39,10 @@ class MemoryEngine:
         self._enable_chroma = enable_chroma
         self._llm_callback: Optional[Callable] = None
 
+        # 主动初始化 ChromaDB（不等首次写入）
+        if enable_chroma:
+            self.store._init_chroma()
+
     # ========== 设置 LLM 回调 ==========
 
     def set_llm(self, callback: Callable):

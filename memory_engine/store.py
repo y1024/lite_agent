@@ -84,6 +84,31 @@ class MemoryStore:
         self._init_schema()
         self._chroma = None
         self._chroma_ready = False
+        self._chroma_error = None
+
+    def _init_chroma(self):
+        """初始化 ChromaDB (公共方法，可主动调用)"""
+        if self._chroma is not None:
+            return self._chroma_ready
+        try:
+            import chromadb
+            chroma_dir = os.path.join(DB_DIR, 'chroma')
+            self._chroma = chromadb.PersistentClient(path=chroma_dir)
+            self._collection = self._chroma.get_or_create_collection(
+                name='bot_memory',
+                metadata={'hnsw:space': 'cosine'}
+            )
+            self._chroma_ready = True
+            self._chroma_error = None
+            return True
+        except ImportError as e:
+            self._chroma_ready = False
+            self._chroma_error = f'chromadb 未安装: {e}'
+            return False
+        except Exception as e:
+            self._chroma_ready = False
+            self._chroma_error = str(e)
+            return False
 
     def _init_schema(self):
         for stmt in SCHEMA.split(';'):
@@ -104,18 +129,7 @@ class MemoryStore:
 
     @property
     def chroma(self):
-        if self._chroma is None:
-            try:
-                import chromadb
-                chroma_dir = os.path.join(DB_DIR, 'chroma')
-                self._chroma = chromadb.PersistentClient(path=chroma_dir)
-                self._collection = self._chroma.get_or_create_collection(
-                    name='bot_memory',
-                    metadata={'hnsw:space': 'cosine'}
-                )
-                self._chroma_ready = True
-            except ImportError:
-                self._chroma_ready = False
+        self._init_chroma()
         return self._chroma
 
     def _embedding_function(self, texts: List[str]) -> List[List[float]]:
@@ -158,7 +172,7 @@ class MemoryStore:
         row_id = cur.lastrowid
 
         # 写入向量库
-        if self.chroma and role in ('user', 'bot', 'system'):
+        if self._chroma_ready and role in ('user', 'bot'):
             try:
                 embeddings = self._embedding_function([content])
                 self._collection.add(

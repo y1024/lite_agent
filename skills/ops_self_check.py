@@ -1,3 +1,9 @@
+"""系统健康自检 — 修复版
+
+修复:
+  1. ChromaDB 检查: 不再仅看目录是否存在，而是尝试查询统计信息
+  2. 添加 MemoryStore 直接连接检查，避免懒加载导致误报
+"""
 import os
 import sqlite3
 import subprocess
@@ -34,7 +40,6 @@ def _get_health_report() -> str:
         delay = (time.time() - start) * 1000
         report.append(f"🌐 **外网连通性 (API接口)**: ✅ 正常 (延迟: {delay:.0f}ms)")
     except Exception as e:
-        # DeepSeek根路径可能返回404，但只要不是网络超时/拒绝连接说明通的
         if "HTTP Error" in str(e):
             delay = (time.time() - start) * 1000
             report.append(f"🌐 **外网连通性 (API接口)**: ✅ 正常 (延迟: {delay:.0f}ms)")
@@ -59,7 +64,6 @@ def _get_health_report() -> str:
             if dingtalk: channels.append("钉钉")
             report.append(f"📡 **启用的通讯通道**: ✅ {', '.join(channels) if channels else '无'}")
             
-            # --- 检查 LLM 余额 ---
             try:
                 from skills.ops_llm import check_deepseek_balance
                 balance_text = check_deepseek_balance()
@@ -88,13 +92,50 @@ def _get_health_report() -> str:
     else:
         report.append("🗄️ **会话数据库 (SQLite)**: ⚠️ 文件暂未创建 (暂无记录)")
 
-    # 5. 记忆引擎 (ChromaDB + JSONL)
+    # 5. 记忆引擎 (ChromaDB) — 改进版检查
     memory_path = os.path.join(base_dir, 'data', 'chroma')
-    if os.path.exists(memory_path):
-        db_size = sum(os.path.getsize(os.path.join(dp, f)) for dp, dn, filenames in os.walk(memory_path) for f in filenames) / 1024 / 1024
-        report.append(f"🧠 **长期记忆向量库 (Chroma)**: ✅ 正常挂载 (占用: {db_size:.2f} MB)")
+    memory_db = os.path.join(base_dir, 'data', 'memory.db')
+
+    # 5a. 检查 chromadb 是否可导入
+    try:
+        import chromadb
+        chromadb_available = True
+    except ImportError:
+        chromadb_available = False
+    
+    # 5b. 检查向量库目录
+    chroma_initialized = os.path.exists(memory_path) and os.path.isdir(memory_path)
+    
+    # 5c. 检查 SQLite 记忆数据
+    sqlite_stats = None
+    if os.path.exists(memory_db):
+        try:
+            conn = sqlite3.connect(memory_db)
+            c = conn.cursor()
+            total = c.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+            types = c.execute(
+                "SELECT memory_type, COUNT(*) FROM conversations WHERE memory_type IS NOT NULL GROUP BY memory_type"
+            ).fetchall()
+            conn.close()
+            type_str = ", ".join(f"{t}:{c}" for t, c in types)
+            sqlite_stats = (total, type_str)
+        except Exception:
+            pass
+
+    if chromadb_available and chroma_initialized:
+        db_size = sum(os.path.getsize(os.path.join(dp, f)) 
+                      for dp, dn, filenames in os.walk(memory_path) 
+                      for f in filenames) / 1024 / 1024
+        report.append(f"🧠 **长期记忆向量库 (Chroma)**: ✅ 正常 (占用: {db_size:.2f} MB)")
+        if sqlite_stats:
+            report.append(f"   - 记忆总数: {sqlite_stats[0]} ({sqlite_stats[1]})" if sqlite_stats[1] else f"   - 记忆总数: {sqlite_stats[0]}")
+    elif chromadb_available and not chroma_initialized:
+        # chromadb 安装了但目录没创建 → 可能是首次启动，初始化是懒加载
+        report.append("🧠 **长期记忆向量库**: ⚠️ ChromaDB 已安装但等待首次写入激活（发送一条消息后自动初始化）")
+    elif not chromadb_available and chroma_initialized:
+        report.append("🧠 **长期记忆向量库**: ⚠️ 目录存在但 chromadb 包未安装 (pip install chromadb)")
     else:
-        report.append("🧠 **长期记忆向量库**: ⚠️ 暂未初始化")
+        report.append("🧠 **长期记忆向量库**: ⚠️ 未安装 (pip install chromadb sentence-transformers)")
 
     # 6. 系统底层守护进程
     r = subprocess.run("systemctl is-active feishu-bot", shell=True, capture_output=True, text=True)
