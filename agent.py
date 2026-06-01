@@ -369,14 +369,14 @@ class Agent:
             return self._run_ai_loop(msg)
 
         if cmd == "rss":
-            return self._handle_rss(args)
+            return self._handle_rss(msg, args)
 
         return AgentResponse(
             f"未知指令 `::{cmd}`。可用: `::goal <描述>` / `::goal` / `::goal done` / `::rss [分组]`",
             title="⚠️", color="red"
         )
 
-    def _handle_rss(self, group_filter: str = "") -> AgentResponse:
+    def _handle_rss(self, msg, group_filter: str = "") -> AgentResponse:
         """直接查 MongoDB，不经过 LLM，0 token"""
         try:
             import pymongo
@@ -447,6 +447,7 @@ class Agent:
                     return AgentResponse('\n'.join(detail), title=f'📰 详情', color='violet')
 
                 lines = [f'**{g["name"]}** · 今日 {total} 篇\n']
+                ctx_brief = []
                 for i, item in enumerate(items, 1):
                     nid = item.get('rssNodeId', 0)
                     site = nodes.get(int(nid) if nid else 0, f'?')
@@ -457,6 +458,12 @@ class Agent:
                     if summary:
                         lines.append(f'_{summary}_')
                     lines.append('')
+                    ctx_brief.append(f'[{i}] {title[:60]} ({site})')
+
+                self.session_mgr.add_message(
+                    msg.session_key, 'system',
+                    f'[RSS {g["name"]} 文章列表]\n' + '\n'.join(ctx_brief)
+                )
 
                 return AgentResponse('\n'.join(lines), title=f'📰 {g["name"]}', color='blue')
 

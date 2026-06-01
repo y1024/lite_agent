@@ -41,3 +41,70 @@ def ops_workspace_run(code: str, timeout: int = 30) -> str:
         return f'执行超时 ({timeout}s)，已强制终止'
     except Exception as e:
         return f'执行失败: {e}'
+
+
+@skill(
+    name='ops_web_fetch',
+    description='抓取网页内容。先直连，失败则走 SOCKS5 代理 (127.0.0.1:18988)。返回 HTML 纯文本摘要',
+    params={
+        'url': {
+            'type': 'string',
+            'description': '目标网页 URL'
+        },
+        'use_proxy': {
+            'type': 'boolean',
+            'description': '是否使用代理（直连失败后自动尝试）',
+            'default': True
+        }
+    }
+)
+def ops_web_fetch(url: str, use_proxy: bool = True) -> str:
+    import subprocess, re
+
+    def try_fetch(proxy: str = '') -> tuple:
+        cmd = ['curl', '-sL', '-m', '15', '--max-filesize', '500000',
+               '-H', 'User-Agent: Mozilla/5.0 (compatible; LiteAgent/1.0)']
+        if proxy:
+            cmd.extend(['-x', proxy])
+        cmd.append(url)
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+            return r.stdout, ''
+        except subprocess.TimeoutExpired:
+            return '', '请求超时'
+        except Exception as e:
+            return '', str(e)
+
+    html, err = try_fetch()
+    if not html and use_proxy:
+        html, err2 = try_fetch('socks5://127.0.0.1:18988')
+        if not html:
+            return f'❌ 抓取失败: 直连={err or "无内容"}, 代理={err2 or "无内容"}'
+
+    if not html or len(html) < 100:
+        return f'❌ 页面内容过短或无内容 ({len(html)} 字符)'
+
+    html = html[:50000]
+
+    title = ''
+    m = re.search(r'<title[^>]*>(.*?)</title>', html, re.I | re.S)
+    if m:
+        title = re.sub(r'<[^>]+>', '', m.group(1)).strip()
+
+    for tag in ['script', 'style', 'nav', 'header', 'footer', 'aside']:
+        html = re.sub(f'<{tag}[^>]*>.*?</{tag}>', '', html, flags=re.I | re.S)
+
+    text = re.sub(r'<br\s*/?>', '\n', html, flags=re.I)
+    text = re.sub(r'</(p|div|h\d|li|tr)>', '\n', text, flags=re.I)
+    text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r'\n\s*\n', '\n', text)
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = '\n'.join(line.strip() for line in text.split('\n') if line.strip())
+
+    if len(text) > 3000:
+        text = text[:3000] + '\n\n... (内容过长已截断)'
+
+    if title:
+        text = f'📌 {title}\n\n{text}'
+
+    return text
