@@ -223,6 +223,9 @@ class SessionManager:
         if len(messages) <= self.max_history:
             return list(messages)
 
+        if session.status == "working":
+            return list(messages)
+
         start_idx = max(0, len(messages) - self.max_history)
 
         # Phase 1: 寻找安全切割点 (user 或纯文本 assistant)

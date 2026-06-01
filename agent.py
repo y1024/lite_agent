@@ -110,9 +110,10 @@ class Agent:
 
 你的职责:
 1. 理解用户的自然语言请求，调用合适的工具来完成任务
-2. 如果任务需要多个步骤，逐步执行并汇报进展
-3. 执行完毕后，用简洁的中文给出结论和建议
-4. 如果用户只是闲聊或提问，正常回复即可，不必强行调用工具
+2. 如果用户描述了一个需要多步骤才能完成的明确目标，先以 🎯 开头确认目标，主动切换到任务模式
+3. 任务模式下逐步执行并汇报进展，每一步检查是否接近目标
+4. 执行完毕后，用简洁的中文给出结论和建议
+5. 如果用户只是闲聊或提问，正常回复即可，不必强行调用工具
 
 可用工具:
 {skills_summary}
@@ -131,11 +132,12 @@ class Agent:
         """处理一条用户消息，返回 AgentResponse"""
         text = msg.text.strip()
 
-        # 内置元指令 (不经过 AI)
+        if text.startswith("::"):
+            return self._handle_double_colon(msg)
+
         if text.startswith("/"):
             return self._handle_builtin(msg)
 
-        # AI 对话 + Tool Call Loop
         return self._run_ai_loop(msg)
 
     # ------------------------------------------------------------------
@@ -307,16 +309,71 @@ class Agent:
 `/ai` - 强行调用 AI（适用于飞书只能接收命令的场景，如 `/ai 查一下账单`）
 `/cmd` - 精确执行账单旧版指令（不经过 AI，如 `/cmd report 3` 或 `/cmd fetch`）
 
+**任务模式 (双冒号指令):**
+`::goal <目标描述>` - 设定任务目标，AI 进入 working 模式，上下文不截断
+`::goal` - 查看当前目标状态与进度
+`::goal done` - 手动标记目标完成并归档
+
 **AI 技能 (直接用自然语言描述即可):**
 {skills_list}
 
 💡 **提示:** 直接用自然语言告诉我你想做什么
 例如: "帮我看看系统状态" / "查一下有没有异常登录" / "看看证书还有多久过期"
-"""
+复杂任务可以先用 `::goal` 锁定目标避免上下文丢失"""
             return AgentResponse(help_text, title="📖 帮助", color="turquoise")
 
         # 未知 / 指令也交给 AI
         return self._run_ai_loop(msg)
+
+    # ------------------------------------------------------------------
+    #  双冒号指令 (绕过飞书/钉钉斜杠拦截)
+    # ------------------------------------------------------------------
+    def _handle_double_colon(self, msg: IncomingMessage) -> AgentResponse:
+        text = msg.text.strip()[2:].strip()
+        parts = text.split()
+        cmd = parts[0].lower() if parts else ""
+        args = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+        if cmd == "goal":
+            if not args:
+                session = self.session_mgr.get_or_create(msg.session_key)
+                if session.goal:
+                    return AgentResponse(
+                        f"🎯 **当前目标:** {session.goal}\n"
+                        f"**状态:** {session.status} | **步骤:** {session.tool_calls}/{self.max_steps}\n"
+                        f"发送 `::goal <新描述>` 更换目标，`::goal done` 标记完成",
+                        title="🎯 目标状态", color="blue"
+                    )
+                return AgentResponse(
+                    "当前没有进行中的目标。\n"
+                    "用法: `::goal <目标描述>` — 开始新任务\n"
+                    "　　　`::goal done` — 标记完成",
+                    title="提示", color="grey"
+                )
+
+            if args.lower() == "done":
+                session = self.session_mgr.get_or_create(msg.session_key)
+                if session.goal:
+                    goal_text = session.goal
+                    self.session_mgr.mark_done(msg.session_key, "用户手动标记完成")
+                    return AgentResponse(
+                        f"✅ 目标已完成并归档: **{goal_text}**",
+                        title="目标完成", color="green"
+                    )
+                return AgentResponse("当前没有进行中的目标", title="提示", color="grey")
+
+            self.session_mgr.set_goal(msg.session_key, args)
+            return AgentResponse(
+                f"🎯 目标已设定: **{args}**\n"
+                f"进入任务模式，最多 {self.max_steps} 步，上下文不会截断\n"
+                f"完成任务后发送 `::goal done` 标记结束",
+                title="🎯 新目标", color="green"
+            )
+
+        return AgentResponse(
+            f"未知指令 `::{cmd}`。可用: `::goal <描述>` / `::goal` / `::goal done`",
+            title="⚠️", color="red"
+        )
 
     # ------------------------------------------------------------------
     #  核心 AI 循环
@@ -455,7 +512,8 @@ class Agent:
                     msg.session_key, '', msg.text, reply_text, msg.channel
                 )
 
-            return AgentResponse(reply_text, title=f"🤖 {self.bot_name}", color="blue")
+            title = f"🤖 {self.bot_name} [{session.tool_calls}/{self.max_steps}]" if session.status == "working" else f"🤖 {self.bot_name}"
+            return AgentResponse(reply_text, title=title, color="blue")
 
         # 超出最大步骤数
         warning = "⚠️ 任务执行步骤过多，已自动终止。请尝试拆分为更小的任务。"
