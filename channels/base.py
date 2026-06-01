@@ -23,6 +23,12 @@ class BaseChannel(ABC):
         """发送回复到平台"""
         pass
     
+    def send_progress(self, *args) -> bool:
+        """收到消息后立即发送进度反馈，告诉用户 bot 正在处理
+        参数: (message_id_or_data, status_text)
+        子类可覆盖实现"""
+        return False
+    
     def format_card(self, title: str, content: str, color: str = 'blue') -> str:
         """将回复格式化为平台特定的卡片格式（子类可覆盖）"""
         return content

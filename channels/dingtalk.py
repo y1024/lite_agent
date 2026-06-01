@@ -38,6 +38,7 @@ class DingTalkChannel(BaseChannel):
                 text=text
             )
 
+            self.send_progress(msg_data, f"已收到 \"{text[:40]}\"")
             resp = self.agent.handle(incoming)
             if resp:
                 # 钉钉回复可以直接调 Webhook URL 或者利用 OpenAPI
@@ -80,6 +81,39 @@ class DingTalkChannel(BaseChannel):
     def stop(self):
         self.running = False
         # DingTalkStreamClient 没有直接的 stop 接口，随守护线程退出即可
+
+    def send_progress(self, msg_data: dict, text: str = "") -> bool:
+        """收到消息后立即发送进度反馈"""
+        import urllib.request
+        try:
+            req = urllib.request.Request(
+                "https://api.dingtalk.com/v1.0/oauth2/accessToken",
+                data=json.dumps({"appKey": self.client_id, "appSecret": self.client_secret}).encode('utf-8'),
+                headers={'Content-Type': 'application/json'}
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                access_token = json.loads(r.read().decode()).get("accessToken")
+
+            if not access_token:
+                return False
+
+            progress_text = text or "已收到你的消息，AI 正在分析中..."
+            webhook = msg_data.get("sessionWebhook")
+            if webhook:
+                req = urllib.request.Request(
+                    webhook,
+                    data=json.dumps({
+                        "msgtype": "markdown",
+                        "markdown": {"title": "正在处理", "text": f"🤔 **正在处理...**\n\n{progress_text}"}
+                    }).encode('utf-8'),
+                    headers={'Content-Type': 'application/json', 'x-acs-dingtalk-access-token': access_token}
+                )
+                with urllib.request.urlopen(req, timeout=10):
+                    pass
+                return True
+        except Exception as e:
+            print(f"  ⚠️ [DingTalk] 进度发送失败: {e}")
+        return False
 
     def send_response(self, msg_data: dict, resp: AgentResponse) -> bool:
         # 钉钉官方 SDK (dingtalk-stream) 中没有包含主动回复的 API，

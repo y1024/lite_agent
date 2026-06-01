@@ -111,6 +111,7 @@ class FeishuChannel(BaseChannel):
     def _process_and_reply(self, msg: IncomingMessage):
         """在独立线程中执行 Agent 逻辑并回复"""
         try:
+            self.send_progress(msg.message_id, f"已收到 \"{msg.text[:50]}{'...' if len(msg.text) > 50 else ''}\"")
             response = self.agent.handle(msg)
             self._reply_card(msg.message_id, response.title, response.text, response.color)
         except Exception as e:
@@ -138,6 +139,11 @@ class FeishuChannel(BaseChannel):
         
         return text
     
+    def send_progress(self, message_id: str, text: str = "") -> bool:
+        """收到消息后立即发送进度反馈卡片"""
+        self._reply_card(message_id, "🤔 正在处理...", text or "已收到你的消息，AI 正在分析中...", "grey")
+        return True
+
     def send_response(self, message_id: str, response: AgentResponse) -> bool:
         """实现基类的发送方法"""
         self._reply_card(message_id, response.title, response.text, response.color)
