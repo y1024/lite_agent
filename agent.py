@@ -321,6 +321,22 @@ class Agent:
     # ------------------------------------------------------------------
     #  核心 AI 循环
     # ------------------------------------------------------------------
+    @staticmethod
+    def _validate_messages(messages: list) -> list:
+        pending_tool_call_ids = set()
+        valid = []
+        for m in messages:
+            if m["role"] == "assistant" and "tool_calls" in m:
+                for tc in m["tool_calls"]:
+                    pending_tool_call_ids.add(tc["id"])
+            if m["role"] == "tool":
+                tid = m.get("tool_call_id", "")
+                if tid not in pending_tool_call_ids:
+                    continue
+                pending_tool_call_ids.discard(tid)
+            valid.append(m)
+        return valid
+
     def _run_ai_loop(self, msg: IncomingMessage) -> AgentResponse:
         """
         Tool Call Loop:
@@ -347,6 +363,7 @@ class Agent:
                     messages[0]["content"] += memory_ctx
 
             messages.extend(self.session_mgr.get_history(msg.session_key))
+            messages = self._validate_messages(messages)
 
             # 调用 LLM
             try:
