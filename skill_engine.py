@@ -5,9 +5,12 @@
 import os
 import sys
 import json
+import time
 import importlib
 import traceback
 from typing import Any, Dict, List, Optional
+
+AUDIT_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'workspace', 'audit.log')
 
 
 # ============================================================
@@ -147,6 +150,7 @@ class SkillEngine:
         # 执行
         try:
             print(f"  🔧 执行技能: {skill_name}({kwargs})")
+            _write_audit(skill_name, arguments)
             result = func(**kwargs)
             if not isinstance(result, str):
                 result = json.dumps(result, ensure_ascii=False, indent=2)
@@ -172,3 +176,14 @@ class SkillEngine:
     def get_skill_count(self) -> int:
         """返回已注册技能数量"""
         return len(_skill_registry)
+
+
+def _write_audit(name: str, args: str):
+    try:
+        os.makedirs(os.path.dirname(AUDIT_LOG), exist_ok=True)
+        ts = time.strftime('%Y-%m-%d %H:%M:%S')
+        args_short = args[:200] if len(args) > 200 else args
+        with open(AUDIT_LOG, 'a', encoding='utf-8') as f:
+            f.write(f'[{ts}] {name}  {args_short}\n')
+    except Exception:
+        pass
