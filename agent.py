@@ -370,6 +370,8 @@ class Agent:
             return self._run_ai_loop(msg)
 
         if cmd == "rss":
+            if args == "push":
+                return self._handle_rss_push()
             return self._handle_rss(msg, args)
 
         return AgentResponse(
@@ -385,6 +387,17 @@ class Agent:
             return handle_rss(msg, group_filter, self.session_mgr)
         except Exception as e:
             return AgentResponse(f'RSS 查询失败: {e}', title='❌ 错误', color='red')
+
+    def _handle_rss_push(self) -> AgentResponse:
+        try:
+            from skills.ops_rss import rss_brief
+            text = rss_brief()
+            if text:
+                self.broadcast(AgentResponse(text, title='📰 RSS 精选', color='blue'))
+                return AgentResponse(text, title='✅ RSS 已推送', color='green')
+            return AgentResponse('当前无新文章可推送', title='RSS', color='grey')
+        except Exception as e:
+            return AgentResponse(f'推送失败: {e}', title='❌', color='red')
 
     # ------------------------------------------------------------------
     #  核心 AI 循环
