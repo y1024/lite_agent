@@ -365,12 +365,8 @@ class Agent:
                 return AgentResponse("当前没有进行中的目标", title="提示", color="grey")
 
             self.session_mgr.set_goal(msg.session_key, args)
-            return AgentResponse(
-                f"🎯 目标已设定: **{args}**\n"
-                f"进入任务模式，最多 {self.max_steps} 步，上下文不会截断\n"
-                f"完成任务后发送 `::goal done` 标记结束",
-                title="🎯 新目标", color="green"
-            )
+            msg.text = args
+            return self._run_ai_loop(msg)
 
         return AgentResponse(
             f"未知指令 `::{cmd}`。可用: `::goal <描述>` / `::goal` / `::goal done`",
