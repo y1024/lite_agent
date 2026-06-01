@@ -143,6 +143,21 @@ def _get_health_report() -> str:
         report.append("🧠 **长期记忆向量库**: ⚠️ 目录存在但 chromadb 包未安装 (pip install chromadb)")
     else:
         report.append("🧠 **长期记忆向量库**: ⚠️ 未安装 (pip install chromadb sentence-transformers)")
+        
+    # 5.5 记忆蒸馏任务状态检查
+    try:
+        # 获取当天 journalctl 日志中有关蒸馏的最后几条记录
+        journal_cmd = "journalctl -u feishu-bot --since today | grep '蒸馏' | tail -n 2"
+        r_distill = subprocess.run(journal_cmd, shell=True, capture_output=True, text=True)
+        if r_distill.stdout.strip():
+            # 提取日志最后一句作为状态总结
+            last_line = r_distill.stdout.strip().split('\n')[-1]
+            status_text = last_line.split(':')[-1].strip() if ':' in last_line else last_line
+            report.append(f"🧪 **记忆蒸馏复盘**: ✅ 运行正常 (最后日志: {status_text})")
+        else:
+            report.append("🧪 **记忆蒸馏复盘**: ⚠️ 今日暂无执行记录 (或未到触发时间)")
+    except Exception as e:
+        report.append(f"🧪 **记忆蒸馏复盘**: ⚠️ 日志读取异常 ({str(e)})")
 
     # 6. 系统底层守护进程
     r = subprocess.run("systemctl is-active feishu-bot", shell=True, capture_output=True, text=True)
