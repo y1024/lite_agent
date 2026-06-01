@@ -187,8 +187,8 @@ class FeishuChannel(BaseChannel):
                 content = content[:MAX_CARD_LEN] + '\\n\\n... ✂️ 内容过长已截断'
             
             # 将输出内容包裹在 Markdown 代码块中，防止 `*` 等符号被错误解析
-            if '```' not in content:
-                content_md = f'```\\n{content}\\n```'
+            if '```' not in content and '**' not in content and '⭐' not in content:
+                content_md = f'```\n{content}\n```'
             else:
                 content_md = content
             
