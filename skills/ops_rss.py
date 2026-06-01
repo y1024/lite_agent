@@ -95,6 +95,8 @@ def _list_view(items, g, total, nodes, db, msg, session_mgr):
             lines.append(f'_{summary}_')
         lines.append('')
         ctx_brief.append(f'[{i}] {title[:60]} ({site})')
+        ctx_brief.append(f'     link: {item.get("link", "N/A")}')
+        ctx_brief.append(f'     excerpt: {summary if summary else "(无)"}')
 
     session_mgr.add_message(
         msg.session_key, 'system',
