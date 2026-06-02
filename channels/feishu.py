@@ -148,6 +148,27 @@ class FeishuChannel(BaseChannel):
         """实现基类的发送方法"""
         self._reply_card(message_id, response.title, response.text, response.color)
         return True
+
+    def send_to(self, open_id: str, response: AgentResponse) -> bool:
+        card_json = self._build_card(response.title, response.text, response.color)
+        try:
+            request = (
+                lark.api.im.v1.CreateMessageRequest.builder()
+                .receive_id_type("open_id")
+                .request_body(
+                    lark.api.im.v1.CreateMessageRequestBody.builder()
+                    .receive_id(open_id)
+                    .msg_type("interactive")
+                    .content(card_json)
+                    .build()
+                )
+                .build()
+            )
+            res = self.lark_client.im.v1.message.create(request)
+            return res.success()
+        except Exception as e:
+            print(f"  ❌ 飞书发送给 {open_id} 失败: {e}")
+            return False
     
     def _reply_card(self, message_id: str, title: str, content: str, color: str = 'blue'):
         """向飞书发送富文本卡片"""
