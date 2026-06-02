@@ -80,8 +80,9 @@ class TelegramChannel(BaseChannel):
                     # 组装 IncomingMessage
                     incoming = IncomingMessage(
                         channel='telegram',
-                        session_key=f"tg_{chat_id}",
-                        message_id=f"{chat_id}_{msg_id}",
+                        user_id=chat_id,
+                        chat_id=chat_id,
+                        message_id=f'{chat_id}_{msg_id}',
                         text=text
                     )
                     
@@ -113,6 +114,15 @@ class TelegramChannel(BaseChannel):
         text = resp.text
         if resp.title:
             text = f"**{resp.title}**\n\n{text}"
+        return self._send_msg(chat_id, text)
+
+    def send_to(self, chat_id: str, resp: AgentResponse) -> bool:
+        return self.send_response(chat_id, resp)
+
+    def send_progress(self, chat_id: str, text: str) -> bool:
+        return self._send_msg(chat_id, f"🤔 _{text}_")
+
+    def _send_msg(self, chat_id: str, text: str) -> bool:
             
         data = {
             'chat_id': chat_id,
