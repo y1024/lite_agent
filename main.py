@@ -53,7 +53,7 @@ def _register_cron_jobs(agent: Agent, config: dict):
         return getattr(mod, fn_name)
 
     def _send_card(text, title, color='blue'):
-        for ch_name in ('feishu', 'dingtalk'):
+        for ch_name in ('feishu', 'dingtalk', 'wecom'):
             ch = next((c for c in agent.channels if c.name == ch_name), None)
             if ch and hasattr(ch, 'send_to') and admin_open_id:
                 if ch.send_to(admin_open_id, AgentResponse(text, title=title, color=color)):
@@ -145,6 +145,14 @@ def main():
         ding_channel = DingTalkChannel(ding_cfg, agent)
         ding_channel.start()
         channels.append(ding_channel)
+
+    # -- 企业微信通道 (send-only, 复用 pushmsg) --
+    wecom_cfg = config.get('channels', {}).get('wecom', {})
+    if wecom_cfg.get('enabled'):
+        from channels.wecom import WeComChannel
+        wecom_ch = WeComChannel(wecom_cfg, agent)
+        wecom_ch.start()
+        channels.append(wecom_ch)
 
     # 将所有激活的通道实例绑定到 Agent，以便后续广播
     agent.channels = channels

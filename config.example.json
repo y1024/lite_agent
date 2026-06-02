@@ -81,6 +81,11 @@
             "enabled": false,
             "client_id": "YOUR_DINGTALK_CLIENT_ID",
             "client_secret": "YOUR_DINGTALK_CLIENT_SECRET"
+        },
+        "wecom": {
+            "enabled": false,
+            "push_url": "http://127.0.0.1:6969/send_message",
+            "push_token": "YOUR_PUSHMSG_TOKEN"
         }
     }
 }
