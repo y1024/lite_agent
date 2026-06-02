@@ -141,10 +141,13 @@ def rss_brief() -> str:
     try:
         with open(CACHE_FILE, 'r') as f:
             cache = json.load(f)
-            if time.time() - cache.get('ts', 0) < 900:
+            age = time.time() - cache.get('ts', 0)
+            if age < 900:
+                print(f'  📦 RSS 使用缓存 (已缓存 {age:.0f}s)')
                 return cache.get('text', '')
     except (FileNotFoundError, json.JSONDecodeError):
         pass
+    print('  🔄 RSS 缓存过期/不存在，实时计算...')
     return _rss_brief_compute()
 
 
@@ -187,6 +190,7 @@ def _rss_brief_compute() -> str:
     articles = list(db[col_name].find(
         {'groupid': {'$in': BRIEF_GROUPS}, 'pubdate': {'$regex': '^' + today}}
     ).sort('pubdate', -1))
+    print(f'  📊 今日文章: {len(articles)} 篇 (分组 {BRIEF_GROUPS})')
 
     pushed_ids = set()
     try:
@@ -234,6 +238,11 @@ def _rss_brief_compute() -> str:
 
     scored.sort(key=lambda x: x[0], reverse=True)
     top = scored[:5]
+
+    print(f'  📡 V2EX API 调用: {v2ex_calls} 次')
+    print(f'  🏆 Top 5:')
+    for score, item, site, exc, sid, link in top:
+        print(f'     ⭐{score} {site} | {item.get("title","")[:50]}')
 
     if not top:
         c.close()
