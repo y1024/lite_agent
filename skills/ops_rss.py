@@ -164,7 +164,7 @@ def _v2ex_reply_count(link: str) -> int:
     url = f'https://www.v2ex.com/api/v2/topics/{tid}/replies?p=1'
     try:
         r = subprocess.run(
-            ['curl', '-x', 'socks5://127.0.0.1:18988', '-s', '-m', '10',
+            ['curl', '-x', 'socks5h://127.0.0.1:18988', '-k', '-s', '-m', '10',
              '-H', f'Authorization: Bearer {V2EX_TOKEN}', url],
             capture_output=True, text=True, timeout=15
         )
