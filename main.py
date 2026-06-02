@@ -53,10 +53,11 @@ def _register_cron_jobs(agent: Agent, config: dict):
         return getattr(mod, fn_name)
 
     def _send_card(text, title, color='blue'):
-        feishu_ch = next((ch for ch in agent.channels if ch.name == 'feishu'), None)
-        if feishu_ch and hasattr(feishu_ch, 'send_to') and admin_open_id:
-            feishu_ch.send_to(admin_open_id, AgentResponse(text, title=title, color=color))
-            return True
+        for ch_name in ('feishu', 'dingtalk'):
+            ch = next((c for c in agent.channels if c.name == ch_name), None)
+            if ch and hasattr(ch, 'send_to') and admin_open_id:
+                if ch.send_to(admin_open_id, AgentResponse(text, title=title, color=color)):
+                    return True
         return False
 
     for job in config.get('cron_jobs', []):
