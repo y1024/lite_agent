@@ -107,9 +107,12 @@ def _list_view(items, g, total, nodes, db, msg, session_mgr):
 
 
 SITE_QUALITY = {
-    '量子位': 9, '机器之心': 9, '虎嗅': 7, '36氪': 7,
+    '量子位': 9, '机器之心': 9, '虎嗅': 7, '36氪': 7, '新智元 - BAAI': 6,
     'IT之家': 5, '百度热搜': 4, '快问快答': 3, '虫部落': 3,
+    'V2EX-全站': 6, '最新话题': 5,
 }
+
+BRIEF_GROUPS = [5, 3]
 
 HOT_KEYWORDS = [
     '大模型', 'Agent', 'Agent', '英伟达', 'OpenAI', 'DeepSeek',
@@ -134,7 +137,7 @@ def rss_brief() -> str:
     nodes = {int(n['id']): n.get('sitename', '?') for n in db['RssNode'].find()}
 
     articles = list(db[col_name].find(
-        {'groupid': 5, 'pubdate': {'$regex': '^' + today}}
+        {'groupid': {'$in': BRIEF_GROUPS}, 'pubdate': {'$regex': '^' + today}}
     ).sort('pubdate', -1))
 
     pushed_ids = set()
