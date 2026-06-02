@@ -22,6 +22,11 @@
         "blocked_commands": ["rm -rf /", "mkfs", "dd if=", "> /dev/sd", "shutdown", "reboot", "passwd"]
     },
 
+    "rssdb": {
+        "uri": "mongodb://user:pass@localhost:27017",
+        "database": "rsslite"
+    },
+
     "channels": {
         "feishu": {
             "enabled": true,

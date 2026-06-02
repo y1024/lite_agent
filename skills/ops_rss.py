@@ -2,13 +2,32 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agent import AgentResponse
 
+_config = None
+
+
+def _rss_config():
+    global _config
+    if _config is None:
+        import json
+        cfg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.json')
+        with open(cfg_path) as f:
+            _config = json.load(f)
+    return _config.get('rssdb', {})
+
+
+def _get_db():
+    """从 config.json 读取 MongoDB 连接，不硬编码密码"""
+    import pymongo
+    cfg = _rss_config()
+    return pymongo.MongoClient(cfg.get('uri', 'mongodb://localhost:27017'), serverSelectionTimeoutMS=5000), cfg.get('database', 'rsslite')
+
 
 def handle_rss(msg, args: str, session_mgr) -> AgentResponse:
     import pymongo
     from datetime import date
 
-    c = pymongo.MongoClient('mongodb://root:M1jiqiS1.v@localhost:27017', serverSelectionTimeoutMS=5000)
-    db = c['rsslite']
+    c, db_name = _get_db()
+    db = c[db_name]
     today = date.today().strftime('%Y-%m-%d')
     month = date.today().strftime('%Y%m')
 
@@ -183,8 +202,8 @@ def _rss_brief_compute() -> str:
     import pymongo, json
     from datetime import date
 
-    c = pymongo.MongoClient('mongodb://root:M1jiqiS1.v@localhost:27017', serverSelectionTimeoutMS=5000)
-    db = c['rsslite']
+    c, db_name = _get_db()
+    db = c[db_name]
     today = date.today().strftime('%Y-%m-%d')
     month = date.today().strftime('%Y%m')
     col_name = f'FeedItem_{month}'
