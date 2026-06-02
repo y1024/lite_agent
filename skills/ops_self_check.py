@@ -12,9 +12,20 @@ import json
 from datetime import datetime
 from skill_engine import skill
 
+
+def _svc_name():
+    try:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(base, 'config.json')) as f:
+            return json.load(f).get('service_name', 'feishu-bot')
+    except Exception:
+        return 'feishu-bot'
+
+
 def _get_health_report() -> str:
     """生成系统全方位健康自检报告"""
     report = ["🏥 **Lite Agent 系统全方位健康自检报告**\n"]
+    svc = _svc_name()
     
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     
@@ -60,9 +71,13 @@ def _get_health_report() -> str:
                 
             feishu = cfg.get('channels', {}).get('feishu', {}).get('enabled', False)
             dingtalk = cfg.get('channels', {}).get('dingtalk', {}).get('enabled', False)
+            wecom = cfg.get('channels', {}).get('wecom', {}).get('enabled', False)
+            tg = cfg.get('channels', {}).get('telegram', {}).get('enabled', False)
             channels = []
             if feishu: channels.append("飞书")
             if dingtalk: channels.append("钉钉")
+            if wecom: channels.append("企业微信")
+            if tg: channels.append("Telegram")
             report.append(f"📡 **启用的通讯通道**: ✅ {', '.join(channels) if channels else '无'}")
             
             try:
@@ -147,11 +162,9 @@ def _get_health_report() -> str:
         
     # 5.5 记忆蒸馏任务状态检查
     try:
-        # 获取当天 journalctl 日志中有关蒸馏的最后几条记录
-        journal_cmd = "journalctl -u feishu-bot --since today | grep '蒸馏' | tail -n 2"
+        journal_cmd = f"journalctl -u {svc} --since today | grep '蒸馏' | tail -n 2"
         r_distill = subprocess.run(journal_cmd, shell=True, capture_output=True, text=True)
         if r_distill.stdout.strip():
-            # 提取日志最后一句作为状态总结
             last_line = r_distill.stdout.strip().split('\n')[-1]
             status_text = last_line.split(':')[-1].strip() if ':' in last_line else last_line
             report.append(f"🧪 **记忆蒸馏复盘**: ✅ 运行正常 (最后日志: {status_text})")
@@ -161,11 +174,11 @@ def _get_health_report() -> str:
         report.append(f"🧪 **记忆蒸馏复盘**: ⚠️ 日志读取异常 ({str(e)})")
 
     # 6. 系统底层守护进程
-    r = subprocess.run("systemctl is-active feishu-bot", shell=True, capture_output=True, text=True)
+    r = subprocess.run(f"systemctl is-active {svc}", shell=True, capture_output=True, text=True)
     if r.stdout.strip() == 'active':
-        report.append("⚙️ **Systemd 守护进程**: ✅ Active (作为系统级后台服务稳定运行中)")
+        report.append(f"⚙️ **Systemd 守护进程 ({svc})**: ✅ Active (作为系统级后台服务稳定运行中)")
     else:
-        report.append("⚙️ **Systemd 守护进程**: ⚠️ 未激活 (当前可能为手动前台运行模式)")
+        report.append(f"⚙️ **Systemd 守护进程 ({svc})**: ⚠️ 未激活 (当前可能为手动前台运行模式)")
 
     # 6.5 备份任务检查
     try:

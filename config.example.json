@@ -1,6 +1,7 @@
 {
     "bot_name": "VPS 助手",
     "project_root": "/root/lite_agent",
+    "service_name": "lite-agent",
 
     "llm": {
         "base_url": "https://api.deepseek.com/v1",

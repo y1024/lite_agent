@@ -70,6 +70,7 @@ class Agent:
         self.max_tokens = llm_cfg.get("max_tokens", 2048)
         self.temperature = llm_cfg.get("temperature", 0.3)
         self.bot_name = config.get("bot_name", "Agent")
+        self.svc_name = config.get("service_name", "feishu-bot")
 
         # 会话管理
         self.session_mgr = SessionManager(
@@ -379,7 +380,7 @@ class Agent:
         if cmd == "cron" and args == "log":
             import subprocess
             r = subprocess.run(
-                "journalctl -u feishu-bot --since '24 hours ago' --no-pager | grep '定时任务' | tail -30",
+                f"journalctl -u {self.svc_name} --since '24 hours ago' --no-pager | grep '定时任务' | tail -30",
                 shell=True, capture_output=True, text=True, timeout=10
             )
             text = r.stdout.strip() or r.stderr.strip() or '(无日志)'
@@ -414,7 +415,7 @@ class Agent:
     def _handle_rss_log(self) -> AgentResponse:
         import subprocess
         r = subprocess.run(
-            "journalctl -u feishu-bot --since '2 hours ago' --no-pager | grep -E 'RSS|缓存|文章|V2EX|Top|预计算' | tail -20",
+            f"journalctl -u {self.svc_name} --since '2 hours ago' --no-pager | grep -E 'RSS|缓存|文章|V2EX|Top|预计算' | tail -20",
             shell=True, capture_output=True, text=True, timeout=10
         )
         text = r.stdout.strip() or r.stderr.strip() or '(无日志)'
