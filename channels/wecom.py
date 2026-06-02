@@ -14,6 +14,7 @@ class WeComChannel(BaseChannel):
         self.push_token = config.get('push_token', '')
         self.listen_port = config.get('listen_port', 8899)
         self._httpd = None
+        self._processed = set()
 
     def start(self):
         self._httpd = HTTPServer(('127.0.0.1', self.listen_port), _make_handler(self))
@@ -51,18 +52,34 @@ class WeComChannel(BaseChannel):
     def _feed_message(self, text: str, user_id: str):
         from agent import IncomingMessage
         import time
-        msg_id = f'wecom_{int(time.time()*1000)}'
+
+        if not text or not text.strip():
+            return
+
+        msg_id = text.strip()[:80]
+        if msg_id in self._processed:
+            return
+        self._processed.add(msg_id)
+        if len(self._processed) > 500:
+            self._processed.clear()
+
+        print(f"📩 [wecom] {user_id}: {text.strip()[:80]}")
+
+        text_stripped = text.strip()
+        self._do_send(f"🤔 已收到: _{text_stripped[:60]}{'...' if len(text_stripped) > 60 else ''}_", use_md=True)
+
         msg = IncomingMessage(
             channel='wecom',
             user_id=user_id,
             chat_id=user_id,
-            message_id=msg_id,
-            text=text,
+            message_id=f'wecom_{int(time.time()*1000)}',
+            text=text_stripped,
         )
         try:
             response = self.agent.handle(msg)
-            self.send_response(msg_id, response)
+            self.send_response(msg.message_id, response)
         except Exception as e:
+            self._do_send(f"❌ 处理失败: {e}", use_md=True)
             print(f"  ❌ 企业微信消息处理异常: {e}")
 
 
