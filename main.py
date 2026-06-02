@@ -163,10 +163,17 @@ def main():
         wecom_ch.start()
         channels.append(wecom_ch)
 
+    # -- API 开放通道 --
+    api_server = None
+    if config.get('channels', {}).get('api', {}).get('enabled'):
+        from channels.api import ApiServer
+        api_server = ApiServer(config.get('channels', {}), agent)
+        api_server.start()
+
     # 将所有激活的通道实例绑定到 Agent，以便后续广播
     agent.channels = channels
 
-    if not channels:
+    if not channels and not api_server:
         print("⚠️ 没有启用任何通信通道，程序将退出。")
         return
 
@@ -183,6 +190,8 @@ def main():
         print("\n🛑 正在停止服务...")
         for ch in channels:
             ch.stop()
+        if api_server:
+            api_server.stop()
         print("👋 再见！")
 
 if __name__ == "__main__":

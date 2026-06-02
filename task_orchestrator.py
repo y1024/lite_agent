@@ -149,8 +149,9 @@ class TaskOrchestrator:
     #  Phase 3: 调度执行
     # ==================================================================
     def execute(self, goal: str, session_key: str,
-                progress_callback: Optional[Callable] = None) -> str:
-        task_id = uuid.uuid4().hex[:8]
+                progress_callback: Optional[Callable] = None,
+                task_id: str = None) -> str:
+        task_id = task_id or uuid.uuid4().hex[:8]
         print(f"\n{'='*60}")
         print(f"🎯 编排任务 [{task_id}]: {goal[:60]}")
         print(f"{'='*60}")

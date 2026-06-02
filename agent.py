@@ -27,12 +27,13 @@ class IncomingMessage:
     """从通道层传入的标准化消息"""
 
     def __init__(self, channel: str, user_id: str, chat_id: str,
-                 message_id: str, text: str):
+                 message_id: str, text: str, notify_channels: list = None):
         self.channel = channel
         self.user_id = user_id
         self.chat_id = chat_id
         self.message_id = message_id
         self.text = text
+        self.notify_channels = notify_channels
 
     @property
     def session_key(self) -> str:
@@ -42,10 +43,11 @@ class IncomingMessage:
 class AgentResponse:
     """Agent 返回给通道层的标准化回复"""
 
-    def __init__(self, text: str, title: str = "", color: str = "blue"):
+    def __init__(self, text: str, title: str = "", color: str = "blue", task_id: str = ""):
         self.text = text
         self.title = title
         self.color = color
+        self.task_id = task_id
 
 
 # ============================================================
@@ -458,6 +460,7 @@ class Agent:
 
     def _run_orchestrated(self, msg: IncomingMessage) -> AgentResponse:
         from task_orchestrator import TaskOrchestrator
+        import uuid
 
         print(f"  [ORCH] 启动编排引擎 session={msg.session_key} task_len={len(msg.text)}")
 
@@ -468,13 +471,16 @@ class Agent:
             channels=self.channels,
         )
 
+        task_id = uuid.uuid4().hex[:8]
+
         def _bg_run():
             try:
-                print(f"  [ORCH] 后台线程开始执行 session={msg.session_key}")
+                print(f"  [ORCH] 后台线程开始执行 session={msg.session_key} task_id={task_id}")
                 result = orch.execute(
                     goal=msg.text,
                     session_key=msg.session_key,
                     progress_callback=self._on_subtask_progress(msg),
+                    task_id=task_id,
                 )
                 print(f"  [ORCH] 后台线程执行完成 session={msg.session_key} result_len={len(result)}")
                 self._push_result(msg, result)
@@ -489,7 +495,7 @@ class Agent:
         return AgentResponse(
             "🎯 复杂任务已受理，正在拆解并行执行中...\n"
             "完成后将自动推送结果，请稍候。",
-            title="🤖 多Agent编排", color="blue"
+            title="🤖 多Agent编排", color="blue", task_id=task_id
         )
 
     def _on_subtask_progress(self, msg):
@@ -512,6 +518,8 @@ class Agent:
     def _push_result(self, msg, result: str):
         response = AgentResponse(result, title="🤖 多Agent执行报告", color="blue")
         for ch in self.channels:
+            if msg.notify_channels is not None and ch.name not in msg.notify_channels:
+                continue
             try:
                 if hasattr(ch, 'send_to'):
                     ch.send_to(msg.chat_id, response)

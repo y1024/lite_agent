@@ -152,6 +152,12 @@
             "listen_port": 8899,
             "push_url": "http://127.0.0.1:6969/send_message",
             "push_token": "YOUR_PUSHMSG_TOKEN"
+        },
+        "api": {
+            "enabled": false,
+            "host": "0.0.0.0",
+            "port": 8887,
+            "auth_token": "your_secret_token_here"
         }
     }
 }
