@@ -84,6 +84,7 @@
         },
         "wecom": {
             "enabled": false,
+            "listen_port": 8899,
             "push_url": "http://127.0.0.1:6969/send_message",
             "push_token": "YOUR_PUSHMSG_TOKEN"
         }

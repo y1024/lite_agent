@@ -1,20 +1,29 @@
 import urllib.request, json
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
+import threading
 from channels.base import BaseChannel
 
 
 class WeComChannel(BaseChannel):
-    """企业微信通道 — 复用 pushmsg 服务 (port 6969) 发送，接收由 w.py 处理"""
+    """企业微信通道 — 复用 pushmsg 服务 (port 6969) 发送，内置 HTTP 接收 w.py 转发"""
 
     def __init__(self, config: dict, agent):
         super().__init__('wecom', config, agent)
         self.push_url = config.get('push_url', 'http://127.0.0.1:6969/send_message')
         self.push_token = config.get('push_token', '')
+        self.listen_port = config.get('listen_port', 8899)
+        self._httpd = None
 
     def start(self):
-        print(f"  📡 企业微信通道就绪 (push: {self.push_url})")
+        self._httpd = HTTPServer(('127.0.0.1', self.listen_port), _make_handler(self))
+        t = threading.Thread(target=self._httpd.serve_forever, daemon=True, name='WeComListener')
+        t.start()
+        print(f"  📡 企业微信通道就绪 (收: :{self.listen_port}, 发: {self.push_url})")
 
     def stop(self):
-        pass
+        if self._httpd:
+            self._httpd.shutdown()
 
     def send_response(self, message_id: str, response) -> bool:
         text = f"**{response.title}**\n\n{response.text}" if response.title else response.text
@@ -38,3 +47,41 @@ class WeComChannel(BaseChannel):
         except Exception as e:
             print(f"  ❌ 企业微信推送失败: {e}")
             return False
+
+    def _feed_message(self, text: str, user_id: str):
+        from agent import IncomingMessage
+        import time
+        msg_id = f'wecom_{int(time.time()*1000)}'
+        msg = IncomingMessage(
+            channel='wecom',
+            user_id=user_id,
+            chat_id=user_id,
+            message_id=msg_id,
+            text=text,
+        )
+        try:
+            response = self.agent.handle(msg)
+            self.send_response(msg_id, response)
+        except Exception as e:
+            print(f"  ❌ 企业微信消息处理异常: {e}")
+
+
+def _make_handler(channel):
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length).decode('utf-8')
+            try:
+                data = json.loads(body)
+                text = data.get('text', '').strip()
+                user_id = data.get('user', 'unknown')
+                if text:
+                    channel._feed_message(text, user_id)
+            except Exception as e:
+                print(f"  ⚠️ 企业微信消息解析失败: {e}")
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+    return Handler
