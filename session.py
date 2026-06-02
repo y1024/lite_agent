@@ -88,6 +88,15 @@ class SessionManager:
                     steps        INTEGER,
                     finished_at  REAL
                 );
+                CREATE TABLE IF NOT EXISTS subtask_progress (
+                    session_key  TEXT,
+                    task_id      TEXT,
+                    subtask_dag_json TEXT,
+                    status       TEXT DEFAULT 'running',
+                    created_at   REAL,
+                    updated_at   REAL,
+                    PRIMARY KEY (session_key, task_id)
+                );
             """)
 
     def _connect(self) -> sqlite3.Connection:
@@ -319,12 +328,39 @@ class SessionManager:
                 conn.execute("DELETE FROM messages WHERE session_key = ?", (session_key,))
             self._persist_session(session)
 
+    def save_subtask_dag(self, session_key: str, task_id: str,
+                          dag_json: str, status: str = "running"):
+        """持久化子任务 DAG 进度"""
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO subtask_progress "
+                "(session_key, task_id, subtask_dag_json, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, COALESCE((SELECT created_at FROM subtask_progress "
+                "WHERE session_key=? AND task_id=?), ?), ?)",
+                (session_key, task_id, dag_json, status, session_key, task_id, now, now)
+            )
+
+    def load_subtask_dag(self, session_key: str, task_id: str) -> Optional[tuple]:
+        """加载持久化的子任务 DAG, 返回 (dag_json, status) 或 None"""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT subtask_dag_json, status FROM subtask_progress "
+                "WHERE session_key=? AND task_id=?",
+                (session_key, task_id)
+            ).fetchone()
+            if row:
+                return (row[0], row[1])
+            return None
+
     def cleanup_expired(self):
         """清理过期会话 (由外部定时调用)"""
         now = time.time()
         expired_keys = []
         with self._lock:
             for key, session in list(self._cache.items()):
+                if session.status == "working":
+                    continue
                 if now - session.updated_at > self.ttl_seconds:
                     expired_keys.append(key)
 

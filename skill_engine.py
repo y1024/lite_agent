@@ -19,7 +19,7 @@ AUDIT_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'workspace'
 _skill_registry: Dict[str, Dict] = {}  # {name: {"func": callable, "schema": dict}}
 
 
-def skill(name: str, description: str, params: dict = None):
+def skill(name: str, description: str, params: dict = None, tags: list = None):
     """
     技能装饰器 - 标记一个函数为可被 AI 调用的技能
 
@@ -33,7 +33,8 @@ def skill(name: str, description: str, params: dict = None):
                     "description": "是否返回详细信息",
                     "default": False
                 }
-            }
+            },
+            tags=["sys", "text"],
         )
         def ops_sys_status(detail: bool = False) -> str:
             ...
@@ -69,7 +70,11 @@ def skill(name: str, description: str, params: dict = None):
             },
         }
 
-        _skill_registry[name] = {"func": func, "schema": schema}
+        _skill_registry[name] = {
+            "func": func,
+            "schema": schema,
+            "tags": tags or [],
+        }
         func._skill_name = name
         return func
 
@@ -129,6 +134,18 @@ class SkillEngine:
         """返回所有已注册技能的 OpenAI Tool Schema 列表"""
         return [info["schema"] for info in _skill_registry.values()]
 
+    def get_schemas_by_names(self, names: list) -> List[Dict]:
+        """返回指定名称的技能 Schema"""
+        if not names:
+            return self.get_all_schemas()
+        return [info["schema"] for name, info in _skill_registry.items()
+                if name in names]
+
+    def get_schemas_by_tag(self, tag: str) -> List[Dict]:
+        """按标签筛选技能 Schema"""
+        return [info["schema"] for info in _skill_registry.values()
+                if tag in (info.get("tags") or [])]
+
     def execute(self, skill_name: str, arguments: str) -> str:
         """
         执行指定技能
@@ -172,6 +189,21 @@ class SkillEngine:
             param_str = ", ".join(params.keys()) if params else "无参数"
             lines.append(f"- **{name}**({param_str}): {desc}")
         return "\n".join(lines)
+
+    def list_skills_filtered(self, names: list) -> str:
+        """列出指定名称的技能"""
+        if not _skill_registry:
+            return "(暂无技能)"
+        lines = []
+        name_set = set(names) if names else set()
+        for name, info in _skill_registry.items():
+            if name_set and name not in name_set:
+                continue
+            desc = info["schema"]["function"]["description"]
+            params = info["schema"]["function"]["parameters"]["properties"]
+            param_str = ", ".join(params.keys()) if params else "无参数"
+            lines.append(f"- **{name}**({param_str}): {desc}")
+        return "\n".join(lines) if lines else "(无可用工具)"
 
     def get_skill_count(self) -> int:
         """返回已注册技能数量"""

@@ -1,0 +1,363 @@
+import json
+import time
+import uuid
+import threading
+import traceback
+from typing import Callable, Optional
+
+from openai import OpenAI
+from model_router import ModelRouter
+from worker_agent import WorkerAgent
+from skill_engine import SkillEngine
+from subtask_dag import Subtask, SubtaskDAG, SubtaskType, SubtaskStatus
+
+PLANNER_PROMPT = """你是一个任务编排专家。请将以下用户目标拆解为子任务列表。
+
+用户目标: {goal}
+
+可用的全部工具:
+{tools_desc}
+
+请输出严格的 JSON，格式如下:
+{{
+  "subtasks": [
+    {{
+      "id": "sub_1",
+      "name": "简短名称",
+      "type": "text|code|multimodal|complex_reasoning|data_analysis",
+      "prompt": "发给执行者的具体指令",
+      "depends_on": [],
+      "tools_hint": ["工具名1", "工具名2"]
+    }}
+  ]
+}}
+
+分类规则:
+- text: 通用文本处理、翻译、总结、闲聊
+- code: 代码生成、调试、审查、脚本编写
+- multimodal: 图片理解、OCR、文件视觉分析
+- complex_reasoning: 多步推理、数学计算、逻辑分析
+- data_analysis: 数据分析、报表生成、趋势判断
+
+编排规则:
+1. 尽可能让无依赖的子任务并行，depends_on 写依赖的 id
+2. 深度不超过 5 层
+3. tools_hint 写可能需要的工具名，不知道就写空数组
+4. 每个子任务 prompt 要具体、可执行"""
+
+
+class TaskOrchestrator:
+
+    def __init__(self, config: dict, skill_engine: SkillEngine,
+                 session_mgr, channels: list = None):
+        self.config = config
+        self.router = ModelRouter(config)
+        self.skill_engine = skill_engine
+        self.session_mgr = session_mgr
+        self.channels = channels or []
+        routing = config.get("task_routing", {})
+        self.planner_model = routing.get("planner_model", "pro")
+        self.classifier_model = routing.get("classifier_model",
+                                            config.get("llm", {}).get("default", "flash"))
+        self.max_parallel = routing.get("max_parallel_subtasks", 3)
+        self.subtask_timeout = routing.get("subtask_timeout_minutes", 15) * 60
+        self.max_depth = routing.get("dag_max_depth", 5)
+        print(f"  [ORCH] 初始化完成 planner={self.planner_model} classifier={self.classifier_model} parallel={self.max_parallel}")
+
+    # ==================================================================
+    #  Phase 1: 拆解
+    # ==================================================================
+    def _plan(self, goal: str) -> list[Subtask]:
+        print(f"  [ORCH:PLAN] 规划中... model={self.planner_model}")
+        planner_client = self.router.get_client(self.planner_model)
+        if not planner_client:
+            planner_client = self.router.get_client(
+                self.config.get("llm", {}).get("default", "")
+            )
+            self.planner_model = self.config.get("llm", {}).get("default", "")
+
+        all_tools = self.skill_engine.get_all_schemas()
+        tools_desc_lines = []
+        for t in all_tools:
+            fn = t["function"]
+            tools_desc_lines.append(f"- {fn['name']}: {fn['description']}")
+        tools_desc = "\n".join(tools_desc_lines)
+
+        prompt = PLANNER_PROMPT.format(goal=goal, tools_desc=tools_desc)
+
+        try:
+            response = planner_client.chat.completions.create(
+                model=self.planner_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                max_tokens=4096,
+                timeout=60.0,
+            )
+            raw = response.choices[0].message.content
+            parsed = self._parse_json(raw)
+            subtasks = []
+            for item in parsed.get("subtasks", []):
+                st_type = SubtaskType(item.get("type", "text"))
+                subtasks.append(Subtask(
+                    id=item.get("id", f"sub_{uuid.uuid4().hex[:6]}"),
+                    name=item["name"],
+                    type=st_type,
+                    prompt=item.get("prompt", ""),
+                    depends_on=item.get("depends_on", []),
+                    tools=item.get("tools_hint", []),
+                ))
+            print(f"  [ORCH:PLAN] 拆解完成: {len(subtasks)} 个子任务")
+            return subtasks
+        except Exception as e:
+            traceback.print_exc()
+            print(f"  ⚠️ 规划失败, 降级为单任务: {e}")
+            return [Subtask(
+                id="sub_0", name=goal[:40], type=SubtaskType.TEXT,
+                prompt=goal, tools=[]
+            )]
+
+    def _parse_json(self, raw: str) -> dict:
+        raw = raw.strip()
+        if raw.startswith("```"):
+            lines = raw.split("\n")
+            raw = "\n".join(lines[1:-1])
+        return json.loads(raw)
+
+    # ==================================================================
+    #  Phase 2: 分类 + 路由
+    # ==================================================================
+    def _classify_and_route(self, subtasks: list[Subtask]):
+        print(f"  [ORCH:ROUTE] 模型路由中... {len(subtasks)} 个子任务")
+        for s in subtasks:
+            model_name, client, tool_filter = self.router.route(s.type.value)
+            s.assigned_model = model_name
+            if tool_filter:
+                s.tools = tool_filter
+            elif not s.tools:
+                pass
+            tools_str = f" tools={s.tools}" if s.tools else ""
+            print(f"  [ORCH:ROUTE]   {s.id} type={s.type.value} → model={model_name}{tools_str}")
+
+    # ==================================================================
+    #  Phase 3: 调度执行
+    # ==================================================================
+    def execute(self, goal: str, session_key: str,
+                progress_callback: Optional[Callable] = None) -> str:
+        task_id = uuid.uuid4().hex[:8]
+        print(f"\n{'='*60}")
+        print(f"🎯 编排任务 [{task_id}]: {goal[:60]}")
+        print(f"{'='*60}")
+
+        subtasks = self._plan(goal)
+        if not subtasks:
+            return "❌ 任务规划失败，无法拆解目标"
+
+        self._classify_and_route(subtasks)
+
+        for s in subtasks:
+            print(f"  📋 {s.id} [{s.type.value}] → {s.assigned_model} : {s.name}")
+
+        dag = SubtaskDAG(subtasks)
+        self._persist_dag(session_key, task_id, dag)
+
+        while not dag.is_all_done():
+            ready = dag.get_ready()
+
+            if not ready and not dag.is_all_done():
+                for sid, s in dag.subtasks.items():
+                    if s.status == SubtaskStatus.PENDING:
+                        unmet = [d for d in s.depends_on
+                                 if dag.subtasks[d].status not in
+                                 (SubtaskStatus.DONE, SubtaskStatus.SKIPPED)]
+                        print(f"  ⏳ {sid} 等待依赖: {unmet}")
+                break
+
+            if not ready:
+                break
+
+            batch = ready[:self.max_parallel]
+            threads = []
+            results_lock = threading.Lock()
+            results = {}
+
+            for subtask in batch:
+                subtask.status = SubtaskStatus.RUNNING
+                subtask.started_at = time.time()
+                print(f"  ▶ {subtask.id} [{subtask.type.value}] 开始执行")
+
+                upstream = {}
+                for dep in subtask.depends_on:
+                    dep_node = dag.subtasks.get(dep)
+                    if dep_node and dep_node.result:
+                        upstream[dep] = dep_node.result
+
+                t = threading.Thread(
+                    target=self._run_single_subtask,
+                    args=(subtask, upstream, results, results_lock),
+                    daemon=True,
+                )
+                threads.append(t)
+                t.start()
+
+            for t in threads:
+                t.join(timeout=self.subtask_timeout)
+
+            for sid, result in results.items():
+                node = dag.subtasks.get(sid)
+                if node:
+                    node.result = result["result"]
+                    node.status = SubtaskStatus(result["status"])
+                    node.error = result.get("error", "")
+                    node.token_usage = result.get("token_usage", 0)
+
+            if dag.has_failure():
+                failed = [sid for sid, s in dag.subtasks.items()
+                          if s.status == SubtaskStatus.FAILED]
+                for fid in failed:
+                    dag.mark_downstream_skipped(fid)
+
+            self._persist_dag(session_key, task_id, dag)
+
+            if progress_callback:
+                try:
+                    progress_callback(dag.progress())
+                except Exception:
+                    pass
+
+            print(f"  📊 进度: {dag.progress()}")
+
+        print(f"  ✅ 编排任务 [{task_id}] 完成")
+        return self._aggregate(dag, goal)
+
+    def _run_single_subtask(self, subtask: Subtask, upstream: dict,
+                            results: dict, lock: threading.Lock):
+        try:
+            print(f"  [WORKER:{subtask.id}] 启动 model={subtask.assigned_model} allowlist={subtask.tools[:3] if subtask.tools else 'all'}...")
+            client = self.router.get_client(subtask.assigned_model)
+            if not client:
+                client = self.router.get_client(
+                    self.config.get("llm", {}).get("default", "")
+                )
+
+            model_cfg = self.router.models_cfg.get(
+                subtask.assigned_model,
+                self.router.models_cfg.get(
+                    self.config.get("llm", {}).get("default", ""), {}
+                )
+            )
+
+            worker = WorkerAgent(
+                name=f"Worker-{subtask.id}",
+                client=client,
+                model_name=subtask.assigned_model,
+                model_cfg=model_cfg,
+                skill_engine=self.skill_engine,
+                tools_allowlist=subtask.tools if subtask.tools else None,
+            )
+            result_text = worker.run(subtask, upstream)
+            subtask.finished_at = time.time()
+
+            with lock:
+                results[subtask.id] = {
+                    "result": result_text,
+                    "status": "done",
+                    "token_usage": subtask.token_usage,
+                }
+            print(f"  [WORKER:{subtask.id}] 完成 tokens={subtask.token_usage} result_len={len(result_text)}")
+        except Exception as e:
+            traceback.print_exc()
+            error_text = str(e)
+            print(f"  ❌ {subtask.id} 失败: {error_text}")
+
+            fb = self.router.get_fallback(subtask.assigned_model)
+            if fb and fb[0] != subtask.assigned_model:
+                fb_name, fb_client = fb
+                print(f"  🔄 {subtask.id} fallback → {fb_name}")
+                try:
+                    fb_cfg = self.router.models_cfg.get(fb_name, {})
+                    worker_fb = WorkerAgent(
+                        name=f"Worker-{subtask.id}-fb",
+                        client=fb_client,
+                        model_name=fb_name,
+                        model_cfg=fb_cfg,
+                        skill_engine=self.skill_engine,
+                        tools_allowlist=subtask.tools if subtask.tools else None,
+                    )
+                    result_text = worker_fb.run(subtask, upstream)
+                    subtask.finished_at = time.time()
+                    with lock:
+                        results[subtask.id] = {
+                            "result": result_text,
+                            "status": "done",
+                            "token_usage": subtask.token_usage,
+                        }
+                    return
+                except Exception:
+                    traceback.print_exc()
+
+            subtask.finished_at = time.time()
+            with lock:
+                results[subtask.id] = {
+                    "result": "",
+                    "status": "failed",
+                    "error": error_text,
+                    "token_usage": subtask.token_usage,
+                }
+
+    # ==================================================================
+    #  Phase 4: 聚合
+    # ==================================================================
+    def _aggregate(self, dag: SubtaskDAG, goal: str) -> str:
+        print(f"  [ORCH:AGGR] 汇总中... done={dag.progress()['done']}/{dag.progress()['total']}")
+        aggregator_client = self.router.get_client(self.planner_model)
+        if not aggregator_client:
+            aggregator_client = self.router.get_client(
+                self.config.get("llm", {}).get("default", "")
+            )
+
+        results_lines = []
+        for s in dag.subtasks.values():
+            status_label = "✅" if s.status == SubtaskStatus.DONE else (
+                "❌" if s.status == SubtaskStatus.FAILED else "⏭️"
+            )
+            body = s.result or s.error or "(无输出)"
+            results_lines.append(f"### {status_label} {s.name} [{s.type.value}]\n{body[:2000]}")
+
+        results_text = "\n\n".join(results_lines)
+
+        prompt = f"""请根据以下子任务执行结果，对原始目标做最终总结。
+
+原始目标: {goal}
+
+子任务执行结果:
+
+{results_text}
+
+请用 Markdown 格式输出结构化的最终报告，包含:
+1. 总体结论
+2. 各子任务结果摘要
+3. 发现的问题和建议（如有）"""
+
+        try:
+            response = aggregator_client.chat.completions.create(
+                model=self.planner_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=4096,
+                timeout=60.0,
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            traceback.print_exc()
+            return f"## 执行报告\n\n{results_text}\n\n> ⚠️ 聚合失败: {e}"
+
+    # ==================================================================
+    #  持久化
+    # ==================================================================
+    def _persist_dag(self, session_key: str, task_id: str, dag: SubtaskDAG):
+        try:
+            dag_json = json.dumps(dag.to_dict(), ensure_ascii=False)
+            status = "running" if not dag.is_all_done() else "done"
+            self.session_mgr.save_subtask_dag(session_key, task_id, dag_json, status)
+        except Exception:
+            pass

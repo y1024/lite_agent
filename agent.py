@@ -5,6 +5,7 @@ AI Agent 核心 - LLM 调度与 Tool Call Loop
 import os
 import json
 import time
+import threading
 import traceback
 from openai import OpenAI
 from session import SessionManager
@@ -58,17 +59,30 @@ class Agent:
     """
 
     def __init__(self, config: dict):
+        self._config = config
         llm_cfg = config["llm"]
         session_cfg = config.get("session", {})
 
         # LLM 客户端
-        self.client = OpenAI(
-            api_key=llm_cfg["api_key"],
-            base_url=llm_cfg["base_url"],
-        )
-        self.model = llm_cfg["model"]
-        self.max_tokens = llm_cfg.get("max_tokens", 2048)
-        self.temperature = llm_cfg.get("temperature", 0.3)
+        if "models" in llm_cfg:
+            default_model = llm_cfg.get("default", "")
+            default_cfg = llm_cfg["models"].get(default_model, {})
+            self.client = OpenAI(
+                api_key=default_cfg.get("api_key", llm_cfg.get("api_key", "")),
+                base_url=default_cfg.get("base_url", llm_cfg.get("base_url", "")),
+            )
+            self.model = default_cfg.get("model", default_model)
+            self.max_tokens = default_cfg.get("max_tokens", 2048)
+            self.temperature = default_cfg.get("temperature", 0.3)
+        else:
+            self.client = OpenAI(
+                api_key=llm_cfg["api_key"],
+                base_url=llm_cfg["base_url"],
+            )
+            self.model = llm_cfg["model"]
+            self.max_tokens = llm_cfg.get("max_tokens", 2048)
+            self.temperature = llm_cfg.get("temperature", 0.3)
+
         self.bot_name = config.get("bot_name", "Agent")
         self.svc_name = config.get("service_name", "feishu-bot")
 
@@ -142,6 +156,11 @@ class Agent:
         if text.startswith("/"):
             return self._handle_builtin(msg)
 
+        if self._is_complex_task(text):
+            print(f"  [ROUTE] 复杂任务检测命中 → 走多Agent编排: {text[:60]}")
+            return self._run_orchestrated(msg)
+
+        print(f"  [ROUTE] 简单任务 → 走同步AI Loop: {text[:60]}")
         return self._run_ai_loop(msg)
 
     # ------------------------------------------------------------------
@@ -422,6 +441,84 @@ class Agent:
         if len(text) > 2500:
             text = text[-2500:]
         return AgentResponse(text, title='📋 RSS 日志', color='turquoise')
+
+    # ------------------------------------------------------------------
+    #  复杂任务检测 + 编排路由
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _is_complex_task(text: str) -> bool:
+        if len(text) < 8:
+            return False
+        keywords = [
+            "分析并", "整理并", "检查所有", "批量", "对比",
+            "生成报表", "全面检查", "逐一", "遍历", "排查",
+            "巡视", "巡检", "汇总", "统计并", "扫描",
+        ]
+        return any(kw in text for kw in keywords)
+
+    def _run_orchestrated(self, msg: IncomingMessage) -> AgentResponse:
+        from task_orchestrator import TaskOrchestrator
+
+        print(f"  [ORCH] 启动编排引擎 session={msg.session_key} task_len={len(msg.text)}")
+
+        orch = TaskOrchestrator(
+            config=self._config,
+            skill_engine=self.skill_engine,
+            session_mgr=self.session_mgr,
+            channels=self.channels,
+        )
+
+        def _bg_run():
+            try:
+                print(f"  [ORCH] 后台线程开始执行 session={msg.session_key}")
+                result = orch.execute(
+                    goal=msg.text,
+                    session_key=msg.session_key,
+                    progress_callback=self._on_subtask_progress(msg),
+                )
+                print(f"  [ORCH] 后台线程执行完成 session={msg.session_key} result_len={len(result)}")
+                self._push_result(msg, result)
+            except Exception as e:
+                print(f"  [ORCH] 后台线程异常 session={msg.session_key}: {e}")
+                traceback.print_exc()
+                self._push_result(msg, f"❌ 编排执行异常: {e}")
+
+        threading.Thread(target=_bg_run, daemon=True, name=f"Orch-{msg.session_key}").start()
+
+        print(f"  [ORCH] 已返回受理回执 session={msg.session_key}")
+        return AgentResponse(
+            "🎯 复杂任务已受理，正在拆解并行执行中...\n"
+            "完成后将自动推送结果，请稍候。",
+            title="🤖 多Agent编排", color="blue"
+        )
+
+    def _on_subtask_progress(self, msg):
+        def callback(progress: dict):
+            text = (
+                f"📊 进度: {progress['done']}/{progress['total']} 完成"
+            )
+            if progress.get("failed", 0) > 0:
+                text += f", {progress['failed']} 失败"
+            if progress.get("running", 0) > 0:
+                text += f", {progress['running']} 执行中"
+            for ch in self.channels:
+                try:
+                    if hasattr(ch, 'send_progress'):
+                        ch.send_progress(msg.message_id, text)
+                except Exception:
+                    pass
+        return callback
+
+    def _push_result(self, msg, result: str):
+        response = AgentResponse(result, title="🤖 多Agent执行报告", color="blue")
+        for ch in self.channels:
+            try:
+                if hasattr(ch, 'send_to'):
+                    ch.send_to(msg.chat_id, response)
+                elif hasattr(ch, 'send_response'):
+                    ch.send_response(msg.message_id, response)
+            except Exception as e:
+                print(f"  ⚠️ 推送结果失败 [{ch.name}]: {e}")
 
     # ------------------------------------------------------------------
     #  核心 AI 循环
