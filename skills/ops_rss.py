@@ -148,7 +148,11 @@ def rss_brief() -> str:
     except (FileNotFoundError, json.JSONDecodeError):
         pass
     print('  🔄 RSS 缓存过期/不存在，实时计算...')
-    return _rss_brief_compute()
+    text = _rss_brief_compute()
+    import json as _json, time as _time
+    with open(CACHE_FILE, 'w') as f:
+        _json.dump({'text': text, 'ts': _time.time()}, f)
+    return text
 
 
 def _v2ex_reply_count(link: str) -> int:
