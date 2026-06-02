@@ -32,6 +32,39 @@
         "token": "YOUR_V2EX_TOKEN"
     },
 
+    "cron_jobs": [
+        {
+            "name": "证书过期检查",
+            "time": "09:00",
+            "command": "bash /root/down/check_cert_expiry.sh"
+        },
+        {
+            "name": "记忆蒸馏复盘",
+            "time": "03:00",
+            "command": "python3 {root}/skills/ops_memory_distiller.py --mode daily"
+        },
+        {
+            "name": "系统状态巡检",
+            "time": "08:00",
+            "command": "python3 -c \"import sys; sys.path.insert(0,'{root}'); from skills.ops_sys import ops_sys_status; print(ops_sys_status(detail=True))\""
+        },
+        {
+            "name": "RSS 预计算",
+            "time_range": {"start": 9, "end": 22, "minute": 50},
+            "skill": "ops_rss::rss_precompute"
+        },
+        {
+            "name": "RSS 精选推送",
+            "time_range": {"start": 9, "end": 22, "minute": 3},
+            "skill": "ops_rss::rss_push"
+        },
+        {
+            "name": "每日健康巡检广播",
+            "time": "23:50",
+            "skill": "ops_self_check::daily_health"
+        }
+    ],
+
     "channels": {
         "feishu": {
             "enabled": true,

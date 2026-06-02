@@ -37,86 +37,70 @@ def session_cleanup_task(agent: Agent, interval: int = 300):
 
 
 def _register_cron_jobs(agent: Agent, config: dict):
-    """注册系统定时任务到 CronManager"""
-    import subprocess
+    """从 config.json 的 cron_jobs 列表注册定时任务"""
+    import subprocess, sys
 
     cron = agent.cron
-    root = config.get('project_root', '/root/lite_agent')
+    root = config['project_root']
     feishu_cfg = config.get('channels', {}).get('feishu', {})
     admin_open_id = feishu_cfg.get('admin_open_id', '')
 
-    # 1. 证书过期检查 — 每天 09:00
-    def check_cert():
-        r = subprocess.run("bash /root/down/check_cert_expiry.sh",
-                           shell=True, capture_output=True, text=True, timeout=30)
-        return r.stdout.strip() or r.stderr.strip() or "(无输出)"
+    from agent import AgentResponse
 
-    cron.add_job("证书过期检查", "09:00", check_cert)
-
-    # 2. 记忆蒸馏复盘 — 每天 03:00
-    def daily_distill():
-        r = subprocess.run(
-            f"python3 {root}/skills/ops_memory_distiller.py --mode daily",
-            shell=True, capture_output=True, text=True, timeout=120)
-        return r.stdout.strip() or r.stderr.strip() or "(无输出)"
-
-    cron.add_job("记忆蒸馏复盘", "03:00", daily_distill)
-
-    # 3. 系统状态巡检 — 每天 08:00
-    def sys_status():
-        r = subprocess.run(
-            f"python3 -c \"import sys; sys.path.insert(0,'{root}'); "
-            "from skills.ops_sys import ops_sys_status; print(ops_sys_status(detail=True))\"",
-            shell=True, capture_output=True, text=True, timeout=15)
-        return r.stdout.strip() or r.stderr.strip() or "(无输出)"
-
-    cron.add_job("系统状态巡检", "08:00", sys_status)
-
-    # 4. 系统自动巡检与推送 — 每天 23:50
-    def daily_health_check():
-        import sys
-        from agent import AgentResponse
-        try:
-            sys.path.insert(0, root)
-            from skills.ops_self_check import _get_health_report
-            report_text = _get_health_report()
-            feishu_ch = next((ch for ch in agent.channels if ch.name == 'feishu'), None)
-            if feishu_ch and hasattr(feishu_ch, 'send_to') and admin_open_id:
-                feishu_ch.send_to(admin_open_id,
-                                  AgentResponse(report_text, title="🌙 每日系统体检报告", color="wathet"))
-            return "巡检广播已推送"
-        except Exception as e:
-            return f"巡检广播失败: {e}"
-
-    cron.add_job("每日健康巡检广播", "23:50", daily_health_check)
-
-    # 5. RSS 精选推送 — 每天 9:00-22:00 每小时过 3 分钟
-    def rss_push():
-        import sys
+    def _import_skill(module: str, fn_name: str):
         sys.path.insert(0, root)
-        from agent import AgentResponse
-        from skills.ops_rss import rss_brief
-        text = rss_brief()
-        if text:
-            feishu_ch = next((ch for ch in agent.channels if ch.name == 'feishu'), None)
-            if feishu_ch and hasattr(feishu_ch, 'send_to') and admin_open_id:
-                feishu_ch.send_to(admin_open_id,
-                                  AgentResponse(text, title='📰 RSS 精选', color='blue'))
-                return 'RSS 精选已推送'
-            return '(飞书通道未启用)'
-        return '(无新文章)'
+        mod = __import__(f'skills.{module}', fromlist=[fn_name])
+        return getattr(mod, fn_name)
 
-    def rss_precompute():
-        import sys
-        sys.path.insert(0, root)
-        from skills.ops_rss import rss_precompute
-        return rss_precompute()
+    def _send_card(text, title, color='blue'):
+        feishu_ch = next((ch for ch in agent.channels if ch.name == 'feishu'), None)
+        if feishu_ch and hasattr(feishu_ch, 'send_to') and admin_open_id:
+            feishu_ch.send_to(admin_open_id, AgentResponse(text, title=title, color=color))
+            return True
+        return False
 
-    for h in range(9, 23):
-        cron.add_job(f'RSS 预计算', f'{h:02d}:50', rss_precompute)
-        cron.add_job(f'RSS 精选推送', f'{h:02d}:03', rss_push)
+    for job in config.get('cron_jobs', []):
+        name = job['name']
+        if 'command' in job:
+            cmd = job['command'].format(root=root)
+            cron.add_job(name, job['time'],
+                         lambda c=cmd: subprocess.run(c, shell=True, capture_output=True,
+                                                      text=True, timeout=120).stdout.strip() or "(无输出)")
+        elif 'skill' in job:
+            module, fn_name = job['skill'].split('::')
+            if fn_name == 'rss_push':
+                def _rss_push():
+                    text = _import_skill('ops_rss', 'rss_brief')()
+                    if text:
+                        _send_card(text, '📰 RSS 精选')
+                        return 'RSS 精选已推送'
+                    return '(无新文章)'
+                fn = _rss_push
+            elif fn_name == 'rss_precompute':
+                def _rss_pre():
+                    return _import_skill('ops_rss', 'rss_precompute')()
+                fn = _rss_pre
+            elif fn_name == 'daily_health':
+                def _health():
+                    try:
+                        text = _import_skill('ops_self_check', '_get_health_report')()
+                        _send_card(text, '🌙 每日系统体检报告', 'wathet')
+                        return "巡检广播已推送"
+                    except Exception as e:
+                        return f"巡检广播失败: {e}"
+                fn = _health
+            else:
+                def _generic():
+                    return _import_skill(module, fn_name)()
+                fn = _generic
 
-    # 启动 Cron 引擎后台线程
+            if 'time_range' in job:
+                tr = job['time_range']
+                for h in range(tr['start'], tr['end'] + 1):
+                    cron.add_job(name, f'{h:02d}:{tr["minute"]:02d}', fn)
+            else:
+                cron.add_job(name, job['time'], fn)
+
     cron.start()
     print(f"📅 定时任务引擎就绪: 共注册 {len(cron.jobs)} 个任务")
 
