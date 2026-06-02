@@ -372,6 +372,8 @@ class Agent:
         if cmd == "rss":
             if args == "push":
                 return self._handle_rss_push()
+            if args == "log":
+                return self._handle_rss_log()
             return self._handle_rss(msg, args)
 
         return AgentResponse(
@@ -397,6 +399,17 @@ class Agent:
             return AgentResponse('当前无新文章可推送', title='RSS', color='grey')
         except Exception as e:
             return AgentResponse(f'推送失败: {e}', title='❌', color='red')
+
+    def _handle_rss_log(self) -> AgentResponse:
+        import subprocess
+        r = subprocess.run(
+            "journalctl -u feishu-bot --since '2 hours ago' --no-pager | grep -E 'RSS|缓存|文章|V2EX|Top|预计算' | tail -20",
+            shell=True, capture_output=True, text=True, timeout=10
+        )
+        text = r.stdout.strip() or r.stderr.strip() or '(无日志)'
+        if len(text) > 2500:
+            text = text[-2500:]
+        return AgentResponse(text, title='📋 RSS 日志', color='turquoise')
 
     # ------------------------------------------------------------------
     #  核心 AI 循环
