@@ -1,5 +1,6 @@
 {
     "bot_name": "VPS 助手",
+    "project_root": "/root/lite_agent",
 
     "llm": {
         "base_url": "https://api.deepseek.com/v1",
@@ -35,7 +36,8 @@
         "feishu": {
             "enabled": true,
             "app_id": "cli_xxxxxxxx",
-            "app_secret": "xxxxxxxx"
+            "app_secret": "xxxxxxxx",
+            "admin_open_id": "ou_xxxxxxxx"
         },
         "telegram": {
             "enabled": false,

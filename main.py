@@ -36,11 +36,14 @@ def session_cleanup_task(agent: Agent, interval: int = 300):
             print(f"⚠️ 清理任务异常: {e}")
 
 
-def _register_cron_jobs(agent: Agent):
+def _register_cron_jobs(agent: Agent, config: dict):
     """注册系统定时任务到 CronManager"""
     import subprocess
 
     cron = agent.cron
+    root = config.get('project_root', '/root/lite_agent')
+    feishu_cfg = config.get('channels', {}).get('feishu', {})
+    admin_open_id = feishu_cfg.get('admin_open_id', '')
 
     # 1. 证书过期检查 — 每天 09:00
     def check_cert():
@@ -53,7 +56,7 @@ def _register_cron_jobs(agent: Agent):
     # 2. 记忆蒸馏复盘 — 每天 03:00
     def daily_distill():
         r = subprocess.run(
-            "python3 /root/lite_agent/skills/ops_memory_distiller.py --mode daily",
+            f"python3 {root}/skills/ops_memory_distiller.py --mode daily",
             shell=True, capture_output=True, text=True, timeout=120)
         return r.stdout.strip() or r.stderr.strip() or "(无输出)"
 
@@ -62,7 +65,7 @@ def _register_cron_jobs(agent: Agent):
     # 3. 系统状态巡检 — 每天 08:00
     def sys_status():
         r = subprocess.run(
-            "python3 -c \"import sys; sys.path.insert(0,'/root/lite_agent'); "
+            f"python3 -c \"import sys; sys.path.insert(0,'{root}'); "
             "from skills.ops_sys import ops_sys_status; print(ops_sys_status(detail=True))\"",
             shell=True, capture_output=True, text=True, timeout=15)
         return r.stdout.strip() or r.stderr.strip() or "(无输出)"
@@ -71,15 +74,15 @@ def _register_cron_jobs(agent: Agent):
 
     # 4. 系统自动巡检与推送 — 每天 23:50
     def daily_health_check():
-        import sys, os
+        import sys
         from agent import AgentResponse
         try:
-            sys.path.insert(0, '/root/lite_agent')
+            sys.path.insert(0, root)
             from skills.ops_self_check import _get_health_report
             report_text = _get_health_report()
             feishu_ch = next((ch for ch in agent.channels if ch.name == 'feishu'), None)
-            if feishu_ch and hasattr(feishu_ch, 'send_to'):
-                feishu_ch.send_to('ou_7135c531f7a77b6cb3ae8b27e5dc056b',
+            if feishu_ch and hasattr(feishu_ch, 'send_to') and admin_open_id:
+                feishu_ch.send_to(admin_open_id,
                                   AgentResponse(report_text, title="🌙 每日系统体检报告", color="wathet"))
             return "巡检广播已推送"
         except Exception as e:
@@ -90,14 +93,14 @@ def _register_cron_jobs(agent: Agent):
     # 5. RSS 精选推送 — 每天 9:00-22:00 每小时过 3 分钟
     def rss_push():
         import sys
-        sys.path.insert(0, '/root/lite_agent')
+        sys.path.insert(0, root)
         from agent import AgentResponse
         from skills.ops_rss import rss_brief
         text = rss_brief()
         if text:
             feishu_ch = next((ch for ch in agent.channels if ch.name == 'feishu'), None)
-            if feishu_ch and hasattr(feishu_ch, 'send_to'):
-                feishu_ch.send_to('ou_7135c531f7a77b6cb3ae8b27e5dc056b',
+            if feishu_ch and hasattr(feishu_ch, 'send_to') and admin_open_id:
+                feishu_ch.send_to(admin_open_id,
                                   AgentResponse(text, title='📰 RSS 精选', color='blue'))
                 return 'RSS 精选已推送'
             return '(飞书通道未启用)'
@@ -105,7 +108,7 @@ def _register_cron_jobs(agent: Agent):
 
     def rss_precompute():
         import sys
-        sys.path.insert(0, '/root/lite_agent')
+        sys.path.insert(0, root)
         from skills.ops_rss import rss_precompute
         return rss_precompute()
 
@@ -166,7 +169,7 @@ def main():
         return
 
     # 4. 注册定时任务并启动 Cron 引擎
-    _register_cron_jobs(agent)
+    _register_cron_jobs(agent, config)
 
     print("✨ Lite Agent 启动完成！按 Ctrl+C 停止")
     
