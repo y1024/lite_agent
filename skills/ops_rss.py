@@ -12,14 +12,19 @@ def _rss_config():
         cfg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.json')
         with open(cfg_path) as f:
             _config = json.load(f)
-    return _config.get('rssdb', {})
+    return _config
 
 
 def _get_db():
     """从 config.json 读取 MongoDB 连接，不硬编码密码"""
     import pymongo
-    cfg = _rss_config()
-    return pymongo.MongoClient(cfg.get('uri', 'mongodb://localhost:27017'), serverSelectionTimeoutMS=5000), cfg.get('database', 'rsslite')
+    rssdb = _rss_config().get('rssdb', {})
+    return pymongo.MongoClient(rssdb.get('uri', 'mongodb://localhost:27017'), serverSelectionTimeoutMS=5000), rssdb.get('database', 'rsslite')
+
+
+def _v2ex_token():
+    v2ex = _rss_config().get('v2ex', {})
+    return v2ex.get('token', '') or os.environ.get('V2EX_TOKEN', '')
 
 
 def handle_rss(msg, args: str, session_mgr) -> AgentResponse:
@@ -144,7 +149,7 @@ PUSHED_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 CACHE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                           'workspace', 'rss_cache.json')
 
-V2EX_TOKEN = 'eece9286-960c-4084-918a-c53714056ca6'
+V2EX_TOKEN = _v2ex_token()
 
 
 def rss_precompute() -> str:
