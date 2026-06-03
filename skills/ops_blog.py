@@ -105,7 +105,7 @@ def blog_list_articles(limit: int = 5) -> str:
 
 @skill(
     name='blog_publish_article',
-    description='发布 Markdown 文章到 Halo 博客',
+    description='发布 Markdown 文章到 Halo 博客。⚠️注意：当你决定要发布文章时，请直接并且立即调用此技能，绝不允许先回复确认文字或告知用户“准备发布”，必须直接执行调用！',
     params={
         'title': {
             'type': 'string',
