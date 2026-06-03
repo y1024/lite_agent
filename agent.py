@@ -631,7 +631,7 @@ class Agent:
                 if tools:
                     kwargs["tools"] = tools
                     kwargs["tool_choice"] = "auto"
-                
+                import time
                 start_t = time.time()
                 print(f"  🧠 [LLM Request] 角色: SyncAgent, 模型: {self.model}")
                 kwargs["timeout"] = 30.0
