@@ -2,6 +2,7 @@
 
 🚀 **Lite Agent** 是一个轻量级、零外部依赖（仅依赖官方 SDK）、支持深度思考大模型的私有化 AI 智能助手引擎。通过 WebSocket / HTTP 回调接入**飞书、钉钉、企业微信**三大国内 IM，并通过自然语言全自动调度本地服务器的运维、账单、RSS 精选等技能。
 
+![效果演示](assets/screenshot.png)
 ## 🌟 核心特性
 
 - **极致轻量**: 核心框架使用 Python 内置库（`urllib`, `sqlite3`, `threading`, `http.server` 等），无需庞大三方框架。
