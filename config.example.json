@@ -2,7 +2,6 @@
     "bot_name": "VPS 助手",
     "project_root": "/root/lite_agent",
     "service_name": "lite-agent",
-
     "llm": {
         "base_url": "https://api.deepseek.com/v1",
         "api_key": "sk-YOUR_API_KEY_HERE",
@@ -18,7 +17,10 @@
                 "max_tokens": 2048,
                 "temperature": 0.3,
                 "max_steps": 8,
-                "tags": ["text", "fast"]
+                "tags": [
+                    "text",
+                    "fast"
+                ]
             },
             "pro": {
                 "base_url": "https://api.deepseek.com/v1",
@@ -27,7 +29,11 @@
                 "max_tokens": 8192,
                 "temperature": 0.1,
                 "max_steps": 12,
-                "tags": ["code", "complex_reasoning", "data_analysis"]
+                "tags": [
+                    "code",
+                    "complex_reasoning",
+                    "data_analysis"
+                ]
             },
             "vision": {
                 "base_url": "https://api.openai.com/v1",
@@ -36,7 +42,11 @@
                 "max_tokens": 4096,
                 "temperature": 0.3,
                 "max_steps": 10,
-                "tags": ["multimodal", "vision", "code"]
+                "tags": [
+                    "multimodal",
+                    "vision",
+                    "code"
+                ]
             },
             "gemini-flash": {
                 "api_key": "YOUR_GEMINI_API_KEY",
@@ -45,7 +55,11 @@
                 "temperature": 0.3,
                 "max_steps": 8,
                 "proxy": "",
-                "tags": ["gemini", "text", "fast"]
+                "tags": [
+                    "gemini",
+                    "text",
+                    "fast"
+                ]
             },
             "gemini-pro": {
                 "api_key": "YOUR_GEMINI_API_KEY",
@@ -54,48 +68,87 @@
                 "temperature": 0.1,
                 "max_steps": 12,
                 "proxy": "",
-                "tags": ["gemini", "code", "complex_reasoning"]
+                "tags": [
+                    "gemini",
+                    "code",
+                    "complex_reasoning"
+                ]
             }
         }
     },
-
     "session": {
         "ttl_minutes": 30,
         "max_history": 20,
         "max_steps_per_goal": 10,
         "daily_token_limit": 500000
     },
-
     "task_routing": {
         "planner_model": "pro",
         "classifier_model": "flash",
         "route_rules": [
-            {"type": "text",            "model": "flash",       "fallback": "gemini-flash"},
-            {"type": "code",            "model": "pro",         "fallback": "flash",       "tools": ["ops_workspace"]},
-            {"type": "multimodal",      "model": "vision",      "fallback": "pro"},
-            {"type": "complex_reasoning","model": "pro",        "fallback": "gemini-pro"},
-            {"type": "data_analysis",   "model": "pro",         "fallback": "flash",       "tools": ["ops_billing", "ops_logs", "ops_sys", "ops_workspace"]}
+            {
+                "type": "text",
+                "model": "flash",
+                "fallback": "gemini-flash"
+            },
+            {
+                "type": "code",
+                "model": "pro",
+                "fallback": "flash",
+                "tools": [
+                    "ops_workspace"
+                ]
+            },
+            {
+                "type": "multimodal",
+                "model": "vision",
+                "fallback": "pro"
+            },
+            {
+                "type": "complex_reasoning",
+                "model": "pro",
+                "fallback": "gemini-pro"
+            },
+            {
+                "type": "data_analysis",
+                "model": "pro",
+                "fallback": "flash",
+                "tools": [
+                    "ops_billing",
+                    "ops_logs",
+                    "ops_sys",
+                    "ops_workspace"
+                ]
+            }
         ],
         "max_parallel_subtasks": 3,
         "subtask_timeout_minutes": 15,
         "dag_max_depth": 5
     },
-
     "security": {
         "allowed_users": [],
-        "sandbox_paths": ["/var/log", "/root/down", "/root/script"],
-        "blocked_commands": ["rm -rf /", "mkfs", "dd if=", "> /dev/sd", "shutdown", "reboot", "passwd"]
+        "sandbox_paths": [
+            "/var/log",
+            "/root/down",
+            "/root/script"
+        ],
+        "blocked_commands": [
+            "rm -rf /",
+            "mkfs",
+            "dd if=",
+            "> /dev/sd",
+            "shutdown",
+            "reboot",
+            "passwd"
+        ]
     },
-
     "rssdb": {
         "uri": "mongodb://user:pass@localhost:27017",
         "database": "rsslite"
     },
-
     "v2ex": {
         "token": "YOUR_V2EX_TOKEN"
     },
-
     "cron_jobs": [
         {
             "name": "证书过期检查",
@@ -114,12 +167,20 @@
         },
         {
             "name": "RSS 预计算",
-            "time_range": {"start": 9, "end": 22, "minute": 50},
+            "time_range": {
+                "start": 9,
+                "end": 22,
+                "minute": 50
+            },
             "skill": "ops_rss::rss_precompute"
         },
         {
             "name": "RSS 精选推送",
-            "time_range": {"start": 9, "end": 22, "minute": 3},
+            "time_range": {
+                "start": 9,
+                "end": 22,
+                "minute": 3
+            },
             "skill": "ops_rss::rss_push"
         },
         {
@@ -128,7 +189,6 @@
             "skill": "ops_self_check::daily_health"
         }
     ],
-
     "channels": {
         "feishu": {
             "enabled": true,
@@ -160,5 +220,10 @@
             "auth_token": "your_secret_token_here",
             "guest_token": "your_guest_token_here"
         }
+    },
+    "halo": {
+        "url": "http://127.0.0.1:8090",
+        "username": "admin",
+        "password": "YOUR_PASSWORD"
     }
 }

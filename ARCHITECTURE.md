@@ -457,7 +457,7 @@ scp file.py vps1:/root/lite_agent/   # 部署单文件
 | 数据自动备份 | ✅ |
 | 账单管理 | ✅ |
 | 配置驱动 Cron | ✅ |
-| 多模型路由 | ❌ 均用 DeepSeek |
+| 多模型路由 | ✅ (ModelRouter 支持跨模型调度与降级) |
 | Web 管理面板 | ❌ |
 | Web 控制台通道 / API | ✅ (完美兼容 OpenAI 接口与 Guest 模式) |
 | OCR / TTS / STT | ❌ |
@@ -469,10 +469,9 @@ scp file.py vps1:/root/lite_agent/   # 部署单文件
 
 ## 15. Roadmap / 预留扩展点
 
-1. **多模型路由**：`config.json llm` 扩展为数组，按任务复杂度选模型
-2. **Web 管理面板**：Flask/FastAPI 独立进程，读 sessions.db，展示状态
-3. **OCR/TTS/STT**：新增 `skills/ops_ocr.py` 等，调外部 API
-4. **支付集成**：支付宝 SDK，`skills/ops_pay.py`
+1. **Web 管理面板**：Flask/FastAPI 独立进程，读 sessions.db，展示状态
+2. **OCR/TTS/STT**：新增 `skills/ops_ocr.py` 等，调外部 API
+3. **支付集成**：支付宝 SDK，`skills/ops_pay.py`
 
 ---
 
