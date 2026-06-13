@@ -97,6 +97,15 @@ class SessionManager:
                     updated_at   REAL,
                     PRIMARY KEY (session_key, task_id)
                 );
+                CREATE TABLE IF NOT EXISTS api_usage_log (
+                    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_key        TEXT,
+                    model              TEXT,
+                    prompt_tokens      INTEGER,
+                    completion_tokens  INTEGER,
+                    total_tokens       INTEGER,
+                    created_at         REAL
+                );
             """)
 
     def _connect(self) -> sqlite3.Connection:
@@ -185,8 +194,21 @@ class SessionManager:
             )
 
     # ------------------------------------------------------------------
-    #  消息管理
+    #  消息与计费管理
     # ------------------------------------------------------------------
+    def log_api_usage(self, session_key: str, model: str, prompt_tokens: int, completion_tokens: int, total_tokens: int):
+        """记录每一次大模型请求的计费详情"""
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO api_usage_log "
+                    "(session_key, model, prompt_tokens, completion_tokens, total_tokens, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (session_key, model, prompt_tokens, completion_tokens, total_tokens, time.time())
+                )
+        except Exception as e:
+            print(f"⚠️ 写入 api_usage_log 失败: {e}")
+
     def add_message(self, session_key: str, role: str, content: str,
                     tool_call_id: str = None, name: str = None,
                     tool_calls_data: list = None,
