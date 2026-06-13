@@ -642,6 +642,13 @@ class Agent:
                 # 更新 Token 消耗
                 if response.usage:
                     session.token_usage += response.usage.total_tokens
+                    self.session_mgr.log_api_usage(
+                        msg.session_key,
+                        self.model,
+                        response.usage.prompt_tokens,
+                        response.usage.completion_tokens,
+                        response.usage.total_tokens
+                    )
 
             except Exception as e:
                 error_msg = f"LLM 调用失败: {e}"
