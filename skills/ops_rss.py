@@ -297,6 +297,16 @@ def _rss_brief_compute() -> str:
         json.dump({'ids': list(new_pushed), 'updated': today}, f)
 
     c.close()
+    
+    # 增加对 RSS 节点状态的检查
+    try:
+        from skills.ops_rss_node import ops_rss_node_status
+        node_status = ops_rss_node_status()
+        if node_status and "注意" in node_status:
+            lines.append(node_status)
+    except Exception as e:
+        print(f"  ❌ RSS Node check failed: {e}")
+        
     return '\n'.join(lines)
 
 
