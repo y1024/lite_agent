@@ -679,7 +679,7 @@ class Agent:
                 import time
                 start_t = time.time()
                 print(f"  🧠 [LLM Request] 角色: SyncAgent, 模型: {self.model}")
-                kwargs["timeout"] = 30.0
+                kwargs["timeout"] = 600.0
                 response = self.client.chat.completions.create(**kwargs)
                 print(f"  ✅ [LLM Response] 耗时: {time.time()-start_t:.2f}s, Tokens: {response.usage.total_tokens if response.usage else 0}")
                 choice = response.choices[0]
