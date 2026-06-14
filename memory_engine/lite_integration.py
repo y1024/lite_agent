@@ -33,16 +33,50 @@ class AgentMemory:
         self.engine = MemoryEngine(enable_chroma=True, enable_llm_distill=False)
         self._lock = threading.Lock()
 
+        # persona.md 缓存（避免每条消息都读盘）
+        # 5 分钟过期；蒸馏只每天一次，5 分钟刷新足够及时
+        self._persona_cache = ''
+        self._persona_loaded_at = 0.0
+        self._persona_ttl = 300  # 秒
+
+        # 首次部署：确保 data/persona.md 存在（不覆盖已有内容）
+        try:
+            from . import persona_writer
+            persona_writer.init_persona_template()
+        except Exception as e:
+            print(f'[persona] 模板初始化失败 (非致命): {e}')
+
     def set_llm(self, callback):
         """设置 LLM 蒸馏回调"""
         self.engine.set_llm(callback)
+
+    def _get_persona(self) -> str:
+        """读取 persona.md，带短 TTL 缓存。"""
+        now = time.time()
+        if self._persona_cache and (now - self._persona_loaded_at) < self._persona_ttl:
+            return self._persona_cache
+        try:
+            from . import persona_writer
+            content = persona_writer.load_persona()
+            self._persona_cache = content
+            self._persona_loaded_at = now
+            return content
+        except Exception as e:
+            print(f'[persona] 加载失败: {e}')
+            return ''
+
 
     # ========== Hook 1: 回复前检索 ==========
 
     def before_reply(self, user_id: str, text: str, user_nick: str = '') -> str:
         """
-        在 AI 回复前检索相关记忆
+        在 AI 回复前检索相关记忆并附加 persona 主档案
         返回: 拼接到 system_prompt 的记忆上下文文本
+
+        拼接顺序：
+          1. persona.md (稳定画像，永远在最前)
+          2. user 长期画像（旧体系沉淀，向下兼容）
+          3. 相关历史记忆 (RAG 检索)
         """
         if not text or len(text) < 2:
             return ''
@@ -53,9 +87,17 @@ class AgentMemory:
                 user_ctx = self.engine.get_user_context(user_id)
 
             parts = []
-            if user_ctx:
-                parts.append(f"\n\n## 用户长期画像\n{user_ctx}")
 
+            # 1. persona.md 主档案 — 稳定的"我是谁"画像
+            persona = self._get_persona()
+            if persona and persona.strip():
+                parts.append(f"\n\n{persona}")
+
+            # 2. 旧版 user_profiles 画像 (兼容)
+            if user_ctx:
+                parts.append(f"\n\n## 用户长期画像（旧版）\n{user_ctx}")
+
+            # 3. RAG 检索 — 跟当前 query 相关的历史
             if results:
                 memory_lines = []
                 for r in results:
@@ -93,18 +135,30 @@ class AgentMemory:
     # ========== 定时蒸馏 ==========
 
     def start_distill_scheduler(self, interval_hours: float = 24.0):
-        """启动后台蒸馏线程"""
+        """启动后台蒸馏线程
+
+        - 启动后等 5 分钟（让服务稳定）就跑第一次（不再傻等 24h）
+        - 之后每 interval_hours 跑一次
+        - 优先调 daily_distill (LLM 提取画像 + 写 persona.md)；
+          降级到 distill_rules（纯规则）当没 LLM callback 时
+        """
 
         def _loop():
+            initial_delay = 300  # 启动 5 分钟后跑第一次
+            time.sleep(initial_delay)
             while True:
-                time.sleep(interval_hours * 3600)
                 try:
                     with self._lock:
-                        summary = self.engine.distill_rules()
+                        # daily_distill 走 LLM 提取（如已注入 set_llm）
+                        # 内部检测到 self.llm is None 时自动 fallback 到规则蒸馏
+                        summary = self.engine.distiller.daily_distill(since_hours=interval_hours)
                     if summary:
                         print(f'[记忆蒸馏] 完成: {len(summary)} 字符')
+                    else:
+                        print('[记忆蒸馏] 跳过（消息数不足）')
                 except Exception as e:
                     print(f'[记忆蒸馏] 出错: {e}')
+                time.sleep(interval_hours * 3600)
 
         t = threading.Thread(target=_loop, daemon=True, name='MemoryDistillThread')
         t.start()
