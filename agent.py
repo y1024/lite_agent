@@ -126,8 +126,19 @@ class Agent:
         # 记忆引擎 (跨会话长期记忆)
         self.memory = AgentMemory() if MEMORY_AVAILABLE else None
         if self.memory:
+            # 给蒸馏注入 LLM callback —— 复用 self.client + self.model
+            # 这样不用单独维护 LLM_API_KEY 环境变量，配置零硬编码
+            def _distill_llm_callback(prompt: str) -> str:
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=self.max_tokens,
+                    temperature=0.3,  # 蒸馏要稳定，不要发散
+                )
+                return resp.choices[0].message.content or ''
+            self.memory.set_llm(_distill_llm_callback)
             self.memory.start_distill_scheduler(interval_hours=24)
-            print("  ✅ 记忆引擎已启用")
+            print("  ✅ 记忆引擎已启用 (蒸馏 LLM callback 已注入)")
 
         # 定时任务引擎
         self.cron = CronManager()

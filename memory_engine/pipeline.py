@@ -22,30 +22,71 @@ from typing import List, Dict, Optional, Callable
 
 
 # ========== LLM 蒸馏 Prompt ==========
+#
+# 蒸馏目标重定义：
+#   旧版 prompt 做"对话复盘"——把对话分成 concept/event/preference/troubleshooting
+#   四个桶。规则化但缺乏"这个人是怎样的"画像沉淀，蒸馏 24 条 cache 后用户画像仍是空。
+#
+#   新版 prompt 做"画像增量提取"——从这 24h 对话中提取**关于主用户本人**的稳定特征，
+#   合并进 data/persona.md 主档案。结果是一份跨工具可读的个人简历式 markdown，
+#   "给任何智能应用都可以快速了解我"的入口。
+#
+# 输出 JSON 与 persona.md 章节的映射在 persona_writer.update_persona() 里定义：
+#   identity / preferences / skills / current_projects / decisions / facts → 各章节
+#   pending → ## ⏳ 待确认 段（累积去重，等用户审）
 
-DISTILL_PROMPT = """你是一个个人助理的"记忆压缩器"。请阅读以下 24 小时内的对话，提取有价值的信息。
+DISTILL_PROMPT = """你是个人助理的"画像提炼器"。请阅读下面这位用户最近 24 小时的对话，从中提取**关于这个人本身的稳定特征**——不是聊了什么话题，而是 ta 的偏好、习惯、决定、技能、所做的事。
 
 严格要求：
-1. 只输出 JSON，不要任何其他文字
-2. 过滤掉寒暄、表情、单字回复等无意义内容
-3. 按以下四种类型分类提取：
+1. 只输出 JSON，不要 markdown 代码块包裹，不要任何其他文字
+2. 只关注**用户本人**的特征，不要把 LLM 助手的回答当成用户的偏好
+3. 过滤掉寒暄、单字回复、表情等无意义内容
+4. **绝对不要**写入任何疑似密码 / API key / 私钥 / token / 凭据的内容（即使是占位符也不要）；如果对话里出现，整条丢弃
+5. 每条记录写成短语形式（一句话总结），不要原样复制对话
+6. 如果某个分类没有内容，给空数组 []
 
-- concept: 概念知识（用户分享的技术方案、开源项目、文章核心思想）
-- event: 事件事实（实际发生的事、完成的任务、配置变更）
-- preference: 用户偏好（喜欢/不喜欢/习惯的做法、风格、工具选择）
-- troubleshooting: 踩坑经验（遇到的问题 + 解决过程 + 关键教训）
-
-JSON 格式:
-{
-  "concept": [{"content": "...", "keywords": ["..."]}],
-  "event": [{"content": "...", "time": "大概时间"}],
-  "preference": [{"content": "..."}],
-  "troubleshooting": [{"content": "...", "cause": "...", "solution": "..."}]
-}
+JSON 格式（七个固定字段）：
+{{
+  "identity":         ["如：'后端开发者，专注 .NET + Python 全栈'"],
+  "preferences":      ["如：'倾向用 LaunchAgent 不用 LaunchDaemon'", "'PR 协作要求一个开发一个审'"],
+  "skills":           ["如：'熟练 Playwright headed 浏览器调试'"],
+  "current_projects": ["如：'RssAdapter / lite_agent / rssnextui 三仓协作'"],
+  "decisions":        ["如：'最终采用 LaunchAgent KeepAlive 守护 dotnet'"],
+  "facts":            ["如：'Mac 端跑 Playwright，VPS 端跑 lite-agent'（不要写 IP / 域名 / 端口等敏感信息）"],
+  "pending":          ["不太确定但值得记下的推断，如：'可能偏好 deepseek 而不是 gemini（基于调用次数）'"]
+}}
 
 对话内容:
 {conversations}
 """
+
+
+# ========== 敏感词正则 (与 persona_writer 同步) ==========
+# 在蒸馏阶段就过滤一遍，避免敏感凭据被发送给 LLM 留在调用日志里。
+# persona_writer 写入时还会再过滤一次，双保险。
+#
+# 注意：不用 \b 词边界做尾界——中文字符与 \b 配合不可靠
+# (如 "sk-xxx的余额" 中 "x" 和 "的" 中间没有 \b)。改用 (?=...) 前瞻或不收尾。
+_SENSITIVE_LINE_PATTERNS = [
+    re.compile(r'sk-[a-zA-Z0-9]{20,}'),
+    re.compile(r'AKID[a-zA-Z0-9]{16,}'),
+    re.compile(r'AKIA[A-Z0-9]{16}'),
+    re.compile(r'(ghp|gho|ghu|ghs|ghr)_[a-zA-Z0-9]{36}'),
+    re.compile(r'(password|passwd|pwd|secret|token|apikey|api_key)\s*[:=]\s*["\']?[^\s"\']{6,}',
+               re.IGNORECASE),
+    re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----'),
+]
+
+
+def _strip_sensitive_lines(text: str) -> str:
+    """整行删除含敏感凭据的对话行，避免发给 LLM。"""
+    out = []
+    for line in text.split('\n'):
+        if any(p.search(line) for p in _SENSITIVE_LINE_PATTERNS):
+            continue
+        out.append(line)
+    return '\n'.join(out)
+
 
 
 class Distiller:
@@ -107,7 +148,8 @@ class Distiller:
                       min_count: int = 5) -> Optional[str]:
         """
         LLM 驱动的日蒸馏
-        流程: 拉取消息 → LLM 复盘 → 写入 cache → 向量化
+        流程: 拉取消息 → 主用户识别 → 敏感词过滤 → LLM 画像提取
+              → 写入 cache → 向量化 → 更新 persona.md
         """
         msgs = self.store.get_unprocessed_messages(
             since_days=since_hours / 24.0, min_count=min_count
@@ -119,10 +161,17 @@ class Distiller:
         source_count = len(msgs)
         date_key = time.strftime('daily_%Y-%m-%d')
 
-        # 1. 构建对话文本
-        conv_text = self._format_conversations(msgs)
+        # 主用户识别：本批消息里 user 角色出现最多的 speaker_id
+        # （蒸馏的画像只针对主用户，避免不同用户互相污染画像）
+        main_speaker = self._identify_main_speaker(msgs)
 
-        # 2. 调用 LLM 复盘
+        # 1. 构建对话文本 — 只取主用户相关对话，并过滤敏感凭据行
+        relevant_msgs = [m for m in msgs if m.get('speaker_id') == main_speaker] \
+            if main_speaker else msgs
+        conv_text = self._format_conversations(relevant_msgs)
+        conv_text = _strip_sensitive_lines(conv_text)
+
+        # 2. 调用 LLM 提取画像
         if self.llm:
             try:
                 raw_json = self.llm(DISTILL_PROMPT.format(conversations=conv_text))
@@ -133,7 +182,7 @@ class Distiller:
                     raw_json = re.sub(r'\n?```$', '', raw_json)
                 distill_data = json.loads(raw_json)
             except Exception as e:
-                print(f'[蒸馏] LLM 复盘失败: {e}，回退规则蒸馏')
+                print(f'[蒸馏] LLM 画像提取失败: {e}，回退规则蒸馏')
                 distill_data = self._rule_distill(msgs)
         else:
             distill_data = self._rule_distill(msgs)
@@ -143,7 +192,7 @@ class Distiller:
             date_key, json.dumps(distill_data, ensure_ascii=False), source_count
         )
 
-        # 4. 向量化 + 写入 ChromaDB
+        # 4. 向量化 + 写入 ChromaDB（仍兼容旧 4 字段格式以避免回归）
         try:
             self._vectorize_and_store(distill_data, source_ids, cache_id)
             self.store.mark_cache_vectorized(cache_id)
@@ -154,7 +203,30 @@ class Distiller:
         # 5. 标记原始消息已蒸馏
         self.store.mark_distilled(source_ids)
 
+        # 6. 更新 persona.md 主档案（新版 prompt 字段才会有意义）
+        try:
+            from . import persona_writer
+            persona_writer.update_persona(distill_data, main_speaker=main_speaker or '')
+        except Exception as e:
+            print(f'[蒸馏] persona.md 更新失败: {e}')
+
         return json.dumps(distill_data, ensure_ascii=False, indent=2)
+
+    def _identify_main_speaker(self, msgs: List[Dict]) -> str:
+        """
+        从这批消息里识别主用户：user 角色消息数最多的 speaker_id。
+        若所有消息都没 speaker_id 或都是 bot 回复，返回空字符串。
+        """
+        from collections import Counter
+        speakers = Counter()
+        for m in msgs:
+            sid = m.get('speaker_id')
+            if not sid or m.get('role') != 'user':
+                continue
+            speakers[sid] += 1
+        if not speakers:
+            return ''
+        return speakers.most_common(1)[0][0]
 
     def _format_conversations(self, msgs: List[Dict]) -> str:
         """格式化对话为 LLM 可读文本"""
