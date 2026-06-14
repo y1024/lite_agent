@@ -370,6 +370,61 @@ class Agent:
                 title="🧠 已记忆", color="green"
             )
 
+        if cmd == "/persona":
+            # /persona              → 显示 persona.md 概览 + 待确认编号列表
+            # /persona confirm <N>  → 把"待确认"第 N 条升格到"工作偏好/手动校正"
+            # /persona confirm <N> <分类>  → 升格到指定分类
+            if not self.memory:
+                return AgentResponse("记忆引擎未安装", title="⚠️", color="grey")
+
+            if not args:
+                # 概览模式
+                content = self.memory.persona_content()
+                pending = self.memory.persona_pending()
+                if not content:
+                    return AgentResponse(
+                        "(persona.md 还没生成。lite-agent 启动 5 分钟后会跑首次蒸馏。)",
+                        title="🧬 个人画像", color="grey"
+                    )
+                # IM 卡片字符限制，截断显示 + 列出待确认编号
+                preview = content if len(content) < 1800 else content[:1700] + '\n...(已截断，VPS 完整文件: /root/lite_agent/data/persona.md)'
+                if pending:
+                    pending_lines = '\n'.join(f"  {i+1}. {p.lstrip('- ').strip()}" for i, p in enumerate(pending))
+                    preview += f"\n\n---\n📋 待确认条目（用 `/persona confirm <序号>` 升格）：\n{pending_lines}"
+                return AgentResponse(preview, title="🧬 个人画像", color="blue")
+
+            sub = args[0].lower()
+            if sub == "confirm":
+                if len(args) < 2 or not args[1].isdigit():
+                    return AgentResponse(
+                        "用法: `/persona confirm <序号> [分类]`\n"
+                        "分类可选: 身份与角色 / 工作偏好 / 技术栈熟练度 / 当前进行中项目 / 已知决策 / 个人事实\n"
+                        "默认升格到 `工作偏好`。\n"
+                        "先用 `/persona` 看待确认条目编号。",
+                        title="📋 用法", color="grey"
+                    )
+                idx = int(args[1])
+                # 用户输入分类名（不带 ## 前缀）；映射到完整章节标题
+                section_short = ' '.join(args[2:]).strip() if len(args) >= 3 else '工作偏好'
+                target_section = '## ' + section_short
+
+                moved = self.memory.persona_confirm(idx, target_section=target_section)
+                if not moved:
+                    return AgentResponse(
+                        f"升格失败：序号 {idx} 越界或分类「{section_short}」不存在。\n"
+                        "用 `/persona` 看当前待确认列表。",
+                        title="⚠️", color="red"
+                    )
+                return AgentResponse(
+                    f"已将下面这条移入 **{section_short}** / 手动校正:\n\n{moved}",
+                    title="✅ 升格成功", color="green"
+                )
+
+            return AgentResponse(
+                "未知子命令。可用: `/persona` (查看), `/persona confirm <序号>` (升格)",
+                title="⚠️", color="grey"
+            )
+
         if cmd == "/cron":
             if not args:
                 return AgentResponse(self.cron.list_jobs(), title="📅 定时任务", color="blue")
@@ -408,6 +463,7 @@ class Agent:
 `/help` - 显示帮助
 `/balance` - 查询大模型账户余额
 `/memory` - 查看记忆池状态
+`/persona` - 查看个人画像 / `confirm <序号>` 升格待确认条目
 `/cron` - 查看定时任务列表，`/cron <序号>` 手动执行，`/cron toggle <序号>` 开关
 `/check` - 执行全方位健康自检，检查系统各模块状态
 `/ai` - 强行调用 AI（适用于飞书只能接收命令的场景，如 `/ai 查一下账单`）

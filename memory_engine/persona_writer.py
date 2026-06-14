@@ -356,3 +356,84 @@ def init_persona_template() -> bool:
     with open(PERSONA_PATH, 'w', encoding='utf-8') as f:
         f.write(rendered)
     return True
+
+
+# ========== /persona IM 命令支持 ==========
+
+def list_pending() -> List[str]:
+    """
+    返回当前 ## ⏳ 待确认 段的所有条目（按出现顺序）。
+    供 /persona 命令展示带编号的列表。
+    """
+    parsed = _parse_persona(load_persona())
+    pending_section = next(
+        (k for k in parsed if '⏳' in k or '待确认' in k),
+        None
+    )
+    if not pending_section:
+        return []
+    return parsed[pending_section].get('_items', [])
+
+
+def confirm_pending(index: int, target_section: str = '## 工作偏好') -> Optional[str]:
+    """
+    一键升格：把 ## ⏳ 待确认 第 index (1-based) 条移入 target_section 的
+    ### 手动校正 子段。
+
+    target_section 必须是 SECTIONS 之一且非待确认段。
+    若 index 越界或 target_section 非法，返回 None。
+    成功返回被移动的条目内容。
+    """
+    if target_section not in SECTIONS:
+        return None
+    if '⏳' in target_section or '待确认' in target_section:
+        return None
+
+    with _FILE_LOCK:
+        content = load_persona()
+        parsed = _parse_persona(content)
+
+        # 找到待确认段
+        pending_section = next(
+            (k for k in parsed if '⏳' in k or '待确认' in k),
+            None
+        )
+        if not pending_section:
+            return None
+        pending_items = parsed[pending_section].get('_items', [])
+
+        # 校验编号
+        if index < 1 or index > len(pending_items):
+            return None
+        # 取出该条目（1-based）
+        item = pending_items.pop(index - 1)
+        parsed[pending_section]['_items'] = pending_items
+
+        # 追加到目标段的 ### 手动校正
+        target_data = parsed.setdefault(target_section, {})
+        manual_items = target_data.setdefault('### 手动校正', [])
+        # 避免重复
+        norm_item = _normalize_item(item)
+        if not any(_normalize_item(x) == norm_item for x in manual_items):
+            manual_items.append(item)
+
+        # 渲染 + 原子写
+        main_speaker = _extract_main_speaker(content)
+        rendered = _render_persona(parsed, main_speaker=main_speaker)
+        tmp = PERSONA_PATH + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.write(rendered)
+        os.replace(tmp, PERSONA_PATH)
+
+    return item
+
+
+def _extract_main_speaker(content: str) -> str:
+    """从 persona.md 文档头部解析出"主用户: `xxx`" 字段（保留续写）"""
+    if not content:
+        return ''
+    m = re.search(r'主用户:\s*`([^`]+)`', content)
+    if m and m.group(1) != '未识别':
+        return m.group(1)
+    return ''
+

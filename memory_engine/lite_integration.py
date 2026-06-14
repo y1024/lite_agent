@@ -194,5 +194,36 @@ class AgentMemory:
         except Exception:
             return {'error': '记忆引擎不可用'}
 
+    # ========== Persona ==========
+
+    def persona_content(self) -> str:
+        """返回 data/persona.md 全文。供 /persona 命令使用。"""
+        try:
+            from . import persona_writer
+            return persona_writer.load_persona()
+        except Exception as e:
+            return f'(加载 persona.md 失败: {e})'
+
+    def persona_pending(self) -> list:
+        """返回 ## ⏳ 待确认 段所有条目，按出现顺序。"""
+        try:
+            from . import persona_writer
+            return persona_writer.list_pending()
+        except Exception:
+            return []
+
+    def persona_confirm(self, index: int, target_section: str = '## 工作偏好'):
+        """把"待确认"第 index (1-based) 条升格到 target_section 的 ### 手动校正。"""
+        try:
+            from . import persona_writer
+            result = persona_writer.confirm_pending(index, target_section=target_section)
+            # 升格后 persona.md 已变，清掉 before_reply 缓存让下一条消息读到新版
+            self._persona_cache = ''
+            self._persona_loaded_at = 0.0
+            return result
+        except Exception as e:
+            print(f'[persona_confirm] 失败: {e}')
+            return None
+
     def close(self):
         self.engine.store.close()
