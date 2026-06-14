@@ -70,6 +70,9 @@ def _register_cron_jobs(agent: Agent, config: dict):
         return False
 
     for job in config.get('cron_jobs', []):
+        # 占位/注释项允许（如 {"_comment": "..."}），跳过
+        if 'name' not in job:
+            continue
         name = job['name']
         if 'command' in job:
             cmd = job['command'].format(root=root)
