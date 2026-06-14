@@ -246,7 +246,7 @@ def _call_url2md_batch(urls: list) -> list:
 # ============================================================
 #  智能分发：判断是直接回复还是上传 HedgeDoc
 # ============================================================
-def _smart_deliver(result: dict) -> str:
+def _smart_deliver(result: dict, force_hedgedoc: bool = False) -> str:
     """根据内容长度和图片数量，决定是直接返回 MD 还是上传 HedgeDoc 返回链接。
 
     返回的字符串是**最终答复**——LLM 应原样转发给用户，不要二次包装、概括或虚构事实。
@@ -256,20 +256,20 @@ def _smart_deliver(result: dict) -> str:
     if not result.get("success", result.get("Success")):
         return f"❌ 抓取失败: {result.get('Error', '未知错误')}"
 
-    title = result.get("title", "无标题")
-    markdown = result.get("markdown", "")
-    image_count = result.get("imageCount", 0)
-    source_url = result.get("url", "")
+    title = result.get("title") or result.get("Title") or "无标题"
+    markdown = result.get("markdown") or result.get("Markdown") or ""
+    image_count = result.get("imageCount") or result.get("ImageCount") or 0
+    source_url = result.get("url") or result.get("Url") or ""
 
-    # 判定阈值：超过 2500 字 或 包含图片 → 上传 HedgeDoc
-    if len(markdown) > 2500 or image_count > 0:
+    # 判定阈值：超过 2500 字 或 包含图片 或 强制上传 HedgeDoc → 上传 HedgeDoc
+    if force_hedgedoc or len(markdown) > 2500 or image_count > 0:
         try:
             # 优先复用缓存里的 HedgeDoc 链接，避免重复上传新笔记
             hedgedoc_url = result.get('hedgedoc_url', '')
             if not hedgedoc_url:
                 hedgedoc_url = _upload_to_hedgedoc(markdown)
                 # 回写缓存里的 hedgedoc_url 字段（供下次命中复用）
-                if hedgedoc_url and not result.get('_cached'):
+                if hedgedoc_url:
                     _cache_put(source_url, result, hedgedoc_url=hedgedoc_url)
             if hedgedoc_url:
                 summary = markdown[:800].replace('\n', ' ').strip()
@@ -349,11 +349,16 @@ def _smart_deliver(result: dict) -> str:
             'type': 'boolean',
             'description': '是否同时截取全页长图作为兜底（默认 false，当图片无法正常显示时可设为 true）',
             'default': False,
+        },
+        'force_hedgedoc': {
+            'type': 'boolean',
+            'description': '是否强制将文章上传至 HedgeDoc（即使未达 2500 字或无图，默认 false）',
+            'default': False,
         }
     },
     tags=['web', 'tool', 'rss'],
 )
-def web_clip(urls: str, screenshot: bool = False) -> str:
+def web_clip(urls: str, screenshot: bool = False, force_hedgedoc: bool = False) -> str:
     """抓取一个或多个 URL 并转为 Markdown"""
     # 解析 URL 列表
     url_list = [u.strip() for u in urls.split(',') if u.strip()]
@@ -367,14 +372,14 @@ def web_clip(urls: str, screenshot: bool = False) -> str:
     # 单个 URL
     if len(url_list) == 1:
         result = _call_url2md(url_list[0], screenshot=screenshot)
-        return _smart_deliver(result)
+        return _smart_deliver(result, force_hedgedoc=force_hedgedoc)
 
     # 批量 URL
     results = _call_url2md_batch(url_list)
     output_lines = [f"📋 **批量抓取结果** ({len(results)}/{len(url_list)} 完成)\n"]
 
     for i, result in enumerate(results, 1):
-        delivery = _smart_deliver(result)
-        output_lines.append(f"---\n### [{i}] {result.get('Title', url_list[i-1][:50])}\n{delivery}\n")
+        delivery = _smart_deliver(result, force_hedgedoc=force_hedgedoc)
+        output_lines.append(f"---\n### [{i}] {result.get('Title') or result.get('title') or url_list[i-1][:50]}\n{delivery}\n")
 
     return "\n".join(output_lines)
