@@ -63,9 +63,18 @@ class TelegramChannel(BaseChannel):
 
                 text = msg['text']
 
+                admin_id = self.config.get('admin_chat_id')
+                is_guest = False
+                if admin_id:
+                    if chat_id != str(admin_id):
+                        is_guest = True
+                else:
+                    print("⚠️ [Telegram] admin_chat_id is not configured! All incoming users will have full admin rights.")
+
                 incoming = IncomingMessage(
                     channel='telegram', user_id=chat_id, chat_id=chat_id,
                     message_id=telegram_msg_id, text=text,
+                    is_guest=is_guest
                 )
                 
                 # 异步处理文本消息，避免阻塞 polling

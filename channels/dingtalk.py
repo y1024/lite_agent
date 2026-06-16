@@ -30,12 +30,21 @@ class DingTalkChannel(BaseChannel):
                 if len(parts) > 1:
                     text = parts[1].strip()
 
+            admin_id = self.config.get('admin_staff_id') or self.config.get('admin_userid')
+            is_guest = False
+            if admin_id:
+                if sender_id != str(admin_id):
+                    is_guest = True
+            else:
+                print("⚠️ [DingTalk] admin_staff_id is not configured! All incoming users will have full admin rights.")
+
             incoming = IncomingMessage(
                 channel='dingtalk',
                 user_id=sender_id,
                 chat_id='',
                 message_id=msg_id,
-                text=text
+                text=text,
+                is_guest=is_guest
             )
 
             from channels import smart_truncate

@@ -201,8 +201,13 @@ def _get_health_report() -> str:
 
     # 7. 技能模块加载状态
     skill_dir = os.path.dirname(__file__)
-    skills_count = len([f for f in os.listdir(skill_dir) if f.startswith('ops_') and f.endswith('.py')])
-    report.append(f"🛠️ **技能引擎 (Skill Engine)**: ✅ 状态健康 (已挂载 {skills_count} 个扩展技能文件)")
+    skill_files = len([f for f in os.listdir(skill_dir) if f.startswith('ops_') and f.endswith('.py')])
+    try:
+        from skill_engine import _skill_registry
+        skill_count = len(_skill_registry)
+        report.append(f"🛠️ **技能引擎 (Skill Engine)**: ✅ 注册 {skill_count} 个工具 (来自 {skill_files} 个文件)")
+    except ImportError:
+        report.append(f"🛠️ **技能引擎 (Skill Engine)**: ✅ 已挂载 {skill_files} 个扩展技能文件 (注册数读取失败)")
     
     return "\n".join(report)
 

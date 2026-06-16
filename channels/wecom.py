@@ -67,12 +67,21 @@ class WeComChannel(BaseChannel):
         from channels import smart_truncate
         self._do_send(f"🤔 已收到: _{smart_truncate(text_stripped, 60)}_", use_md=True)
 
+        admin_id = self.config.get('admin_userid')
+        is_guest = False
+        if admin_id:
+            if user_id != str(admin_id):
+                is_guest = True
+        else:
+            print("⚠️ [WeCom] admin_userid is not configured! All incoming users will have full admin rights.")
+
         msg = IncomingMessage(
             channel='wecom',
             user_id=user_id,
             chat_id=user_id,
             message_id=f'wecom_{int(time.time()*1000)}',
             text=text_stripped,
+            is_guest=is_guest
         )
         try:
             response = self.agent.handle(msg)
