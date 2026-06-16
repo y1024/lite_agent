@@ -99,13 +99,22 @@ class FeishuChannel(BaseChannel):
             
             print(f"📩 [feishu:{chat_type}] {sender_id}: {text}")
             
+            admin_id = self.config.get('admin_open_id')
+            is_guest = False
+            if admin_id:
+                if sender_id != str(admin_id):
+                    is_guest = True
+            else:
+                print("⚠️ [Feishu] admin_open_id is not configured! All incoming users will have full admin rights.")
+
             # 构建标准化的消息对象
             incoming = IncomingMessage(
                 channel='feishu',
                 user_id=sender_id,
                 chat_id=message.chat_id or '',
                 message_id=msg_id,
-                text=text
+                text=text,
+                is_guest=is_guest
             )
             
             # 异步处理消息，避免阻塞导致飞书重传

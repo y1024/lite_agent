@@ -89,7 +89,8 @@
         "dingtalk": {
             "enabled": true,
             "client_id": "dingb2eadjfacycy1kuk",
-            "client_secret": "${DINGTALK_CLIENT_SECRET}"
+            "client_secret": "${DINGTALK_CLIENT_SECRET}",
+            "admin_staff_id": "manager123"
         },
         "wecom": {
             "enabled": true,
