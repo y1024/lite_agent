@@ -12,6 +12,7 @@ from skill_engine import skill
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'sentinel')
 BASELINE_FILE = os.path.join(DATA_DIR, 'baseline.json')
+STATE_FILE = os.path.join(DATA_DIR, 'state.json')
 FINDINGS_FILE = os.path.join(DATA_DIR, 'findings.jsonl')
 
 class Sentinel:
@@ -19,6 +20,7 @@ class Sentinel:
         if not os.path.exists(DATA_DIR):
             os.makedirs(DATA_DIR, exist_ok=True)
         self.baseline = self._load_baseline()
+        self.state = self._load_state()
         self.findings = []
         self.is_baseline_run = not os.path.exists(BASELINE_FILE)
 
@@ -31,11 +33,26 @@ class Sentinel:
                 return {}
         return {}
 
+    def _load_state(self):
+        if os.path.exists(STATE_FILE):
+            try:
+                with open(STATE_FILE, 'r') as f:
+                    return json.load(f)
+            except Exception:
+                return {}
+        return {}
+
     def _save_baseline(self):
         tmp_file = BASELINE_FILE + '.tmp'
         with open(tmp_file, 'w') as f:
             json.dump(self.baseline, f, indent=2)
         os.replace(tmp_file, BASELINE_FILE)
+
+    def _save_state(self):
+        tmp_file = STATE_FILE + '.tmp'
+        with open(tmp_file, 'w') as f:
+            json.dump(self.state, f, indent=2)
+        os.replace(tmp_file, STATE_FILE)
 
     def _should_update_baseline(self):
         return self.is_baseline_run or getattr(self, 'update_baseline_mode', False)
@@ -85,7 +102,7 @@ class Sentinel:
         try:
             st = os.stat(log_path)
             state_key = "ssh_log_state"
-            last_state = self.baseline.get(state_key, {"inode": 0, "size": 0})
+            last_state = self.state.get(state_key, {"inode": 0, "size": 0})
             
             start_idx = 0
             if st.st_ino == last_state.get("inode") and st.st_size >= last_state.get("size", 0):
@@ -106,8 +123,8 @@ class Sentinel:
                     if re.search(r'\broot\b', line):
                         success_root += 1
             
-            # Update baseline
-            self.baseline[state_key] = {"inode": st.st_ino, "size": st.st_size}
+            # Update state
+            self.state[state_key] = {"inode": st.st_ino, "size": st.st_size}
             
             # Brute force threshold
             if failed_attempts > 100:
@@ -285,8 +302,8 @@ class Sentinel:
             if p not in allowed_ports and p not in baseline_ports and not self.is_baseline_run:
                 self._add_finding("network", "high", f"New public listening port detected: {p}")
                 
-        if self.is_baseline_run or getattr(self, 'update_baseline_mode', False):
-            self.baseline['public_ports'] = list(set(ports).union(baseline_ports))
+        if self._should_update_baseline():
+            self.baseline['public_ports'] = list(set(ports))
 
     # ---------------------------------------------------------
     # Module 6: Suspicious Processes
@@ -326,7 +343,7 @@ class Sentinel:
     def scan_log_tampering(self):
         logs = ['/var/log/auth.log', '/var/log/secure', '/var/log/wtmp', '/var/log/btmp', '/var/log/lastlog']
         
-        log_states = self.baseline.get('log_states', {})
+        log_states = self.state.get('log_states', {})
         for log in logs:
             if not os.path.exists(log):
                 if log in log_states and not self.is_baseline_run:
@@ -349,7 +366,7 @@ class Sentinel:
                     
             log_states[log] = st.st_size
             
-        self.baseline['log_states'] = log_states
+        self.state['log_states'] = log_states
 
     def run_all(self, update_baseline=False):
         self.update_baseline_mode = update_baseline
@@ -363,6 +380,8 @@ class Sentinel:
         
         if self._should_update_baseline():
             self._save_baseline()
+            
+        self._save_state()
         
         if self.findings:
             with open(FINDINGS_FILE, 'a') as f:
