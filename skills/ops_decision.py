@@ -112,7 +112,7 @@ def _call_model(router: ModelRouter, model_name: str, prompt: str, schema_cls) -
             )
             return response.choices[0].message.content
     except Exception as e:
-        return f'{{"error": "{str(e)}" }}'
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 def _compute_weighted_score(res: DecisionResult, profile: dict) -> float:
     base_weights = profile.get("base_weights", {})
@@ -155,6 +155,8 @@ def _calculate_variance(scores: List[float]) -> float:
 def ops_decision(task_type: str, topic: str) -> str:
     router = ModelRouter(load_config())
     models = _get_models_from_config()
+    if not models:
+        return "🚨 未配置或获取到委员会模型 (committee.models 为空)"
     profile = _get_task_profile(task_type)
     run_id = str(uuid.uuid4())[:8]
     
@@ -205,8 +207,8 @@ def ops_decision(task_type: str, topic: str) -> str:
         
     std_dev = _calculate_variance(computed_scores)
     
-    # 检测决策方向冲突
-    valid_decisions = [v["res"].decision_type for v in results.values() if "res" in v]
+    # 检测决策方向冲突 (归一化后再比较)
+    valid_decisions = [v["res"].decision_type.strip().lower() for v in results.values() if "res" in v]
     direction_conflict = len(set(valid_decisions)) > 1
     
     output = [f"📊 委员会评审完毕 [RunID: {run_id}] | 得分方差: {std_dev:.2f}", ""]
@@ -228,15 +230,18 @@ def ops_decision(task_type: str, topic: str) -> str:
     output.append(f"📂 机器审计日志已归档: `{audit_path}`")
     
     # 步骤四：分歧判断与处理机制
-    if std_dev > 25 or direction_conflict:
+    valid_count = len(valid_decisions)
+    if valid_count < 2:
+        output.append("\n⚠️ **警告：有效评委不足 2 名，无法形成有效共识**")
+    elif std_dev > 25 or direction_conflict:
         output.append("\n🚨 **高级警报：模型间存在严重分歧**")
         if direction_conflict:
             output.append("> 原因：各模型的 `decision_type` 核心结论方向不一致。")
         else:
-            output.append("> 原因：总分方差大于 25。")
+            output.append("> 原因：总分标准差大于 25。")
         output.append("> 已熔断自动判定，请人类介入查阅上方 reasoning。")
     elif std_dev > 12:
-        output.append("\n⚠️ **警告：模型中度分歧 (方差>12)**")
+        output.append("\n⚠️ **警告：模型中度分歧 (标准差>12)**")
         output.append("> (V2将触发 PeerReview 进行结构化纠错)")
     else:
         output.append("\n✅ **委员会达成高度共识**")
