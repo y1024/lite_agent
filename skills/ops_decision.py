@@ -23,7 +23,7 @@ class BaseScores(BaseModel):
     timeliness: int = Field(ge=0, le=100)
 
 class DecisionResult(BaseModel):
-    decision_type: str = Field(description="结论类型方向，建议使用标准词汇，例如：'值得执行', '高风险放弃', '暂缓观察'")
+    decision_type: Literal["值得执行", "高风险放弃", "暂缓观察"] = Field(description="结论类型方向")
     base_scores: BaseScores = Field(description="固定维度得分")
     extra_scores: List[CriteriaScore] = Field(description="额外维度的得分", default_factory=list)
     model_reported_overall_score: int = Field(ge=0, le=100, description="你(模型)主观认为的综合得分")
@@ -138,7 +138,7 @@ def _compute_weighted_score(res: DecisionResult, profile: dict) -> float:
         return total_score / total_weight
     return float(res.model_reported_overall_score)
 
-def _calculate_variance(scores: List[float]) -> float:
+def _calculate_std_dev(scores: List[float]) -> float:
     if len(scores) < 2: return 0.0
     mean = sum(scores) / len(scores)
     variance = sum((x - mean) ** 2 for x in scores) / len(scores)
@@ -205,13 +205,13 @@ def ops_decision(task_type: str, topic: str) -> str:
     if not computed_scores:
         return f"🚨 所有模型评估失败。详情见审计: {audit_path}"
         
-    std_dev = _calculate_variance(computed_scores)
+    std_dev = _calculate_std_dev(computed_scores)
     
     # 检测决策方向冲突 (归一化后再比较)
     valid_decisions = [v["res"].decision_type.strip().lower() for v in results.values() if "res" in v]
     direction_conflict = len(set(valid_decisions)) > 1
     
-    output = [f"📊 委员会评审完毕 [RunID: {run_id}] | 得分方差: {std_dev:.2f}", ""]
+    output = [f"📊 委员会评审完毕 [RunID: {run_id}] | 得分标准差: {std_dev:.2f}", ""]
     
     for m, data in results.items():
         if "res" in data:
