@@ -23,9 +23,11 @@ class ApiHandler(BaseHTTPRequestHandler):
     def _auth(self) -> bool:
         auth_token = self.server.api_server.auth_token
         guest_token = self.server.api_server.config.get("guest_token", "")
+        edge_token = self.server.api_server.config.get("edge_token", "")
         self.is_guest = False
+        self.is_edge = False
         
-        if not auth_token and not guest_token:
+        if not auth_token and not guest_token and not edge_token:
             return True
             
         auth_header = self.headers.get('Authorization')
@@ -40,6 +42,9 @@ class ApiHandler(BaseHTTPRequestHandler):
             return True
         elif guest_token and token == guest_token:
             self.is_guest = True
+            return True
+        elif edge_token and token == edge_token:
+            self.is_edge = True
             return True
             
         self.send_error(403, "Forbidden")
@@ -62,10 +67,18 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
             
         parsed_url = urlparse(self.path)
+        
+        # 边缘节点权限隔离
+        if getattr(self, 'is_edge', False) and parsed_url.path != '/api/report':
+            self.send_error(403, "Forbidden: Edge token is limited to /api/report")
+            return
+
         if parsed_url.path in ('/api/v1/chat', '/api/v1/task'):
             self._handle_chat_or_task()
         elif parsed_url.path == '/v1/chat/completions':
             self._handle_openai_chat_completions()
+        elif parsed_url.path == '/api/report':
+            self._handle_edge_report()
         else:
             self.send_error(404, "Not Found")
 
@@ -133,6 +146,50 @@ class ApiHandler(BaseHTTPRequestHandler):
             }
 
         self.wfile.write(json.dumps(out_data, ensure_ascii=False).encode('utf-8'))
+
+    def _handle_edge_report(self):
+        content_length = int(self.headers.get('Content-Length', 0))
+        if content_length == 0:
+            self.send_error(400, "Bad Request: Empty body")
+            return
+            
+        body = self.rfile.read(content_length)
+        try:
+            req_data = json.loads(body.decode('utf-8'))
+        except json.JSONDecodeError:
+            self.send_error(400, "Bad Request: Invalid JSON")
+            return
+            
+        node_id = req_data.get('node_id')
+        if not node_id:
+            self.send_error(400, "Bad Request: Missing node_id")
+            return
+            
+        import os
+        from config_loader import load_config
+        project_root = load_config().get('project_root', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        report_dir = os.path.join(project_root, 'data', 'sentinel', 'edge_reports')
+        os.makedirs(report_dir, exist_ok=True)
+        
+        # 安全过滤 node_id 防止目录穿越
+        import re
+        safe_node_id = re.sub(r'[^a-zA-Z0-9_-]', '', node_id)
+        if not safe_node_id:
+            self.send_error(400, "Bad Request: Invalid node_id")
+            return
+            
+        file_path = os.path.join(report_dir, f"{safe_node_id}.json")
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(req_data, f, ensure_ascii=False, indent=2)
+            
+            self.send_response(200)
+            self._send_cors_headers()
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "success", "message": "Report saved"}).encode('utf-8'))
+        except Exception as e:
+            self.send_error(500, f"Internal Server Error: {str(e)}")
 
     def _handle_task_stream(self, query: str):
         qs = parse_qs(query)
