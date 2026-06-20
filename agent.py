@@ -66,10 +66,10 @@ class IncomingMessage:
         self.chat_id = chat_id
         self.message_id = message_id
         self.text = text
-        self.notify_channels = notify_channels
         self.is_guest = is_guest
         self.sync_mode = sync_mode
-        self.sync_mode = sync_mode
+        # 如果未指定通知通道，默认只回复给来源通道 (避免跨通道广播)
+        self.notify_channels = notify_channels if notify_channels is not None else [channel]
         # channel_payload: 通道层原始上下文, 供异步推送 (_push_result/send_progress) 使用
         # 如 钉钉的 msg_data(含sessionWebhook)、飞书的 sender open_id 等。默认 None 向后兼容。
         self.channel_payload = channel_payload or {}
@@ -769,11 +769,14 @@ class Agent:
             if progress.get("running", 0) > 0:
                 text += f", {progress['running']} 执行中"
             for ch in self.channels:
+                # 进度条属于交互过程，只对发起的来源通道可见，绝不跨通道广播
+                if ch.name != msg.channel:
+                    continue
                 try:
                     if hasattr(ch, 'send_progress'):
                         ch.send_progress(msg.message_id, text)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"  ⚠️ [{ch.name}] 进度发送失败: {e}")
         return callback
 
     def _push_result(self, msg, result: str):
