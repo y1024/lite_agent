@@ -87,8 +87,10 @@ class TaskOrchestrator:
         cfg = self.router.models_cfg.get(model_key, {})
         return cfg.get("model", model_key)
 
-    def _plan(self, goal: str) -> tuple:
+    def _plan(self, goal: str, max_steps: int = None) -> tuple:
         """返回 (subtasks: list[Subtask], global_strategy: str)"""
+        if max_steps is None:
+            max_steps = self.dag_max_steps
         print(f"  [ORCH:PLAN] 规划中... model={self.planner_model}")
         planner_client = self.router.get_client(self.planner_model)
         if not planner_client:
@@ -107,7 +109,7 @@ class TaskOrchestrator:
         tools_desc = "\n".join(tools_desc_lines)
 
         prompt = PLANNER_PROMPT.format(goal=goal, tools_desc=tools_desc,
-                                       max_steps=self.dag_max_steps)
+                                       max_steps=max_steps)
 
         try:
             start_t = time.time()
@@ -177,8 +179,15 @@ class TaskOrchestrator:
     # ==================================================================
     def execute(self, goal: str, session_key: str,
                 progress_callback: Optional[Callable] = None,
-                task_id: str = None) -> str:
+                task_id: str = None,
+                step_override: int = None) -> str:
         task_id = task_id or uuid.uuid4().hex[:8]
+
+        # 用户可通过 [steps=N] 后缀临时提升本次任务预算
+        effective_max_steps = step_override if step_override else self.dag_max_steps
+        if step_override:
+            print(f"  🔓 用户提升步数预算: {self.dag_max_steps} → {step_override}")
+
         print(f"\n{'='*60}")
         print(f"🎯 编排任务 [{task_id}]: {goal[:60]}")
         print(f"{'='*60}")
@@ -186,7 +195,7 @@ class TaskOrchestrator:
         self.session_mgr.save_subtask_dag(session_key, task_id,
             json.dumps({"global_strategy": "", "subtasks": []}, ensure_ascii=False), "planning")
 
-        subtasks, global_strategy = self._plan(goal)
+        subtasks, global_strategy = self._plan(goal, max_steps=effective_max_steps)
         if not subtasks:
             return "❌ 任务规划失败，无法拆解目标"
 
@@ -194,6 +203,23 @@ class TaskOrchestrator:
             print(f"  🧭 全局战略: {global_strategy[:120]}...")
 
         self._classify_and_route(subtasks)
+
+        # Plan B: Fail-Fast — 规划期估算步数，仅拦截明显离谱的规划 (1.5x 弹性)
+        # 因为 Planner 已感知预算并主动精简，运行期还有硬截断兜底，规划期不充当二次裁判。
+        # 只有估算远超预算 (如 30 预算拆 10+ 子任务) 才拦截，避免否决 Planner 的紧凑规划。
+        estimated = len(subtasks) * 5
+        failfast_threshold = effective_max_steps * 1.5
+        if estimated > failfast_threshold:
+            print(f"  ⚠️ Fail-Fast: 预计 {estimated} 步 > 浮动阈值 {failfast_threshold:.0f} 步, 拒绝执行")
+            return (
+                f"⚠️ **任务预算不足，已拦截**\n\n"
+                f"该任务拆解为 **{len(subtasks)}** 个子任务，"
+                f"粗略预计需约 **{estimated}** 步 LLM 交互，"
+                f"远超当前预算 **{effective_max_steps}** 步（浮动阈值 {failfast_threshold:.0f} 步）。\n\n"
+                f"🔧 **解决方案**: 在指令末尾添加 `[steps={estimated + 10}]` "
+                f"重新下发，即可获得足够的步数配额。\n\n"
+                f"> 原指令: {goal[:100]}{'...' if len(goal) > 100 else ''}"
+            )
 
         for s in subtasks:
             print(f"  📋 {s.id} [{s.type.value}] → {s.assigned_model} : {s.name}")
@@ -206,8 +232,8 @@ class TaskOrchestrator:
             total_steps = sum(s.steps_used for s in dag.subtasks.values())
             total_tokens = sum(s.token_usage for s in dag.subtasks.values())
 
-            if total_steps >= self.dag_max_steps:
-                print(f"  ⚠️ DAG 全局步数预算耗尽 ({total_steps}/{self.dag_max_steps})")
+            if total_steps >= effective_max_steps:
+                print(f"  ⚠️ DAG 全局步数预算耗尽 ({total_steps}/{effective_max_steps})")
                 for s in dag.subtasks.values():
                     if s.status == SubtaskStatus.PENDING:
                         s.status = SubtaskStatus.SKIPPED
