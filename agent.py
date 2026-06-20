@@ -709,8 +709,18 @@ class Agent:
     def _run_orchestrated(self, msg: IncomingMessage) -> AgentResponse:
         from task_orchestrator import TaskOrchestrator
         import uuid
+        import re
 
-        print(f"  [ORCH] 启动编排引擎 session={msg.session_key} task_len={len(msg.text)}")
+        # 解析用户指定的步数覆盖 [steps=N], 如 "备份日志 [steps=50]"
+        goal = msg.text
+        step_override = None
+        m = re.search(r'\[steps=(\d+)\]', goal)
+        if m:
+            step_override = int(m.group(1))
+            goal = re.sub(r'\s*\[steps=\d+\]', '', goal).strip()
+            print(f"  [ORCH] 用户指定步数覆盖: {step_override}")
+
+        print(f"  [ORCH] 启动编排引擎 session={msg.session_key} task_len={len(goal)}")
 
         orch = TaskOrchestrator(
             config=self._config,
@@ -725,10 +735,11 @@ class Agent:
             try:
                 print(f"  [ORCH] 后台线程开始执行 session={msg.session_key} task_id={task_id}")
                 result = orch.execute(
-                    goal=msg.text,
+                    goal=goal,
                     session_key=msg.session_key,
                     progress_callback=self._on_subtask_progress(msg),
                     task_id=task_id,
+                    step_override=step_override,
                 )
                 print(f"  [ORCH] 后台线程执行完成 session={msg.session_key} result_len={len(result)}")
                 self._push_result(msg, result)
