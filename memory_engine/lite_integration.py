@@ -75,15 +75,16 @@ class AgentMemory:
 
         拼接顺序：
           1. persona.md (稳定画像，永远在最前)
-          2. user 长期画像（旧体系沉淀，向下兼容）
-          3. 相关历史记忆 (RAG 检索)
+          2. 从历史纠正中学到的偏好 (preference 类型，高优先级，可操作)
+          3. user 长期画像（旧体系沉淀，向下兼容）
+          4. 相关历史记忆 (RAG 检索)
         """
         if not text or len(text) < 2:
             return ''
 
         try:
             with self._lock:
-                results = self.engine.recall(text, speaker_id=user_id, top_k=3)
+                results = self.engine.recall(text, speaker_id=user_id, top_k=5)
                 user_ctx = self.engine.get_user_context(user_id)
 
             parts = []
@@ -93,17 +94,42 @@ class AgentMemory:
             if persona and persona.strip():
                 parts.append(f"\n\n{persona}")
 
-            # 2. 旧版 user_profiles 画像 (兼容)
+            # 2. 从历史纠正中学到的偏好 — 按 preference 类型单独分组
+            # 注意: 不同检索路径的字段名不同:
+            #   语义搜索 → tags (逗号分隔字符串, 含 'preference')
+            #   规则提取 → type ('preference'/'decision'/'fact'/etc)
+            #   关键词搜索 → tags (JSON 数组字符串)
+            prefs = []
+            for r in results:
+                rtype = r.get('type', '')
+                rtags = r.get('tags', '')
+                if rtype == 'preference' or 'preference' in str(rtags):
+                    prefs.append(r)
+            other_results = [r for r in results
+                           if r not in prefs]
+            if prefs:
+                pref_lines = []
+                for r in prefs:
+                    pref_lines.append(f"- ⚠️ {r['content'][:300]}")
+                parts.append(
+                    "\n\n## 🧭 从历史纠正中学到的工具/行为偏好 "
+                    "(高优先级，选择工具前必须检查)\n"
+                    + '\n'.join(pref_lines)
+                )
+
+            # 3. 旧版 user_profiles 画像 (兼容)
             if user_ctx:
                 parts.append(f"\n\n## 用户长期画像（旧版）\n{user_ctx}")
 
-            # 3. RAG 检索 — 跟当前 query 相关的历史
-            if results:
+            # 4. RAG 检索 — 跟当前 query 相关的历史 (偏好的已单列，这里放其余)
+            if other_results:
                 memory_lines = []
-                for r in results:
-                    memory_lines.append(f"- {r['content'][:150]}")
+                for r in other_results:
+                    memory_lines.append(f"- {r['content'][:300]}")
                 if memory_lines:
-                    parts.append(f"\n\n## 相关历史记忆\n" + '\n'.join(memory_lines))
+                    parts.append(
+                        "\n\n## 相关历史记忆\n" + '\n'.join(memory_lines)
+                    )
 
             return '\n'.join(parts) if parts else ''
 
@@ -117,15 +143,28 @@ class AgentMemory:
                     user_text: str, bot_reply: str,
                     channel: str = ''):
         """
-        异步存储对话
+        异步存储对话 + 纠正偏好实时学习
         """
         def _store():
             try:
                 with self._lock:
                     self.engine.remember(user_id, user_nick, user_text, role='user')
                     self.engine.remember(user_id, user_nick, bot_reply, role='bot')
-                    # 隐式反馈
-                    self.engine.feedback.detect_implicit_feedback(user_id, user_text)
+                    # 隐式反馈: 检测纠正/追问
+                    score = self.engine.feedback.detect_implicit_feedback(
+                        user_id, user_text
+                    )
+                    # 负面反馈 → 实时提取并存储偏好 (不等日蒸馏, 闭合学习回路)
+                    if score < 0:
+                        pref = self._extract_correction_preference(
+                            user_text, bot_reply
+                        )
+                        if pref:
+                            self.engine.force_remember(
+                                user_id, user_nick, pref,
+                                memory_type='preference', importance=0.9
+                            )
+                            print(f'[学习] 从纠正中提取偏好: {pref[:80]}')
             except Exception as e:
                 print(f'[记忆存储] 降级: {e}')
 
@@ -176,6 +215,38 @@ class AgentMemory:
         except Exception as e:
             print(f'[强制记忆] 失败: {e}')
             return 0
+
+    # ========== 纠正偏好提取 (闭合反馈-学习回路) ==========
+
+    def _extract_correction_preference(self, user_text: str,
+                                       bot_reply: str) -> Optional[str]:
+        """用 LLM 从用户的纠正语中提取可操作的偏好规则。
+
+        用户纠正 agent 后实时调用（不等日蒸馏），
+        提取的偏好以高优先级存入记忆池，下次类似查询直接被 RAG 召回。
+        """
+        llm = getattr(self.engine, '_llm_callback', None)
+        if not llm:
+            return None
+        prompt = (
+            '用户问了问题，助手给了一个不符合预期的回复。用户纠正说：\n'
+            '---\n'
+            f'用户纠正: {user_text[:300]}\n'
+            '---\n'
+            f'助手之前的错误回复（摘要）: {bot_reply[:200]}\n'
+            '---\n'
+            '请提取用户纠正中隐含的**工具/行为偏好规则**，写成一句简洁可操作的指令。\n'
+            '格式: "当用户查询<主题>时，应该<用哪个工具/怎么做>，不要<错误做法>"\n'
+            '如果用户的纠正不涉及具体工具选择或行为偏好（只是闲聊纠正语气），返回 "NONE"。\n'
+            '只返回指令本身，不要额外解释。'
+        )
+        try:
+            result = llm(prompt)
+            if result and result.strip() and result.strip().upper() != 'NONE':
+                return result.strip()
+        except Exception:
+            pass
+        return None
 
     # ========== 蒸馏 ==========
 

@@ -186,10 +186,20 @@ def _v2ex_reply_count(link: str) -> int:
         return 0
     tid = m.group(1)
     url = f'https://www.v2ex.com/api/v2/topics/{tid}/replies?p=1'
+    
+    # Strict regex validation on generated URL to prevent command argument injection
+    if not re.match(r'^https://www\.v2ex\.com/api/v2/topics/\d+/replies\?p=1$', url):
+        return 0
+        
+    # Validate token character set
+    token = V2EX_TOKEN.strip() if V2EX_TOKEN else ""
+    if token and not re.match(r'^[a-zA-Z0-9_\-]+$', token):
+        return 0
+
     try:
         r = subprocess.run(
             ['curl', '-x', 'socks5h://127.0.0.1:18988', '-k', '-s', '-m', '10',
-             '-H', f'Authorization: Bearer {V2EX_TOKEN}', url],
+             '-H', f'Authorization: Bearer {token}', url],
             capture_output=True, text=True, timeout=15
         )
         data = json.loads(r.stdout)

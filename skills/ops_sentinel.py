@@ -196,8 +196,11 @@ class Sentinel:
         auth_keys_paths = ['/root/.ssh/authorized_keys', '/root/.ssh/authorized_keys2']
         # other users
         for user_dir in os.listdir('/home'):
-            auth_keys_paths.append(f'/home/{user_dir}/.ssh/authorized_keys')
-            auth_keys_paths.append(f'/home/{user_dir}/.ssh/authorized_keys2')
+            user_ssh_dir = os.path.join('/home', user_dir, '.ssh')
+            if not os.path.normpath(user_ssh_dir).startswith('/home'):
+                continue
+            auth_keys_paths.append(os.path.join(user_ssh_dir, 'authorized_keys'))
+            auth_keys_paths.append(os.path.join(user_ssh_dir, 'authorized_keys2'))
             
         for path in auth_keys_paths:
             if os.path.exists(path):

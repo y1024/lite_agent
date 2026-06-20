@@ -71,6 +71,9 @@ def ops_workspace_run(code: str, timeout: int = 30) -> str:
 def ops_web_fetch(url: str, use_proxy: bool = True) -> str:
     import subprocess, re
 
+    if not url.startswith(('http://', 'https://')):
+        return "❌ 拒绝访问: url 必须以 http:// 或 https:// 开头"
+
     def try_fetch(proxy: str = '') -> tuple:
         cmd = ['curl', '-sL', '-m', '15', '--max-filesize', '500000',
                '-H', 'User-Agent: Mozilla/5.0 (compatible; LiteAgent/1.0)']

@@ -163,8 +163,10 @@ def _get_health_report() -> str:
         
     # 5.5 记忆蒸馏任务状态检查
     try:
-        journal_cmd = f"journalctl -u {svc} --since today | grep '蒸馏' | tail -n 2"
-        r_distill = subprocess.run(journal_cmd, shell=True, capture_output=True, text=True)
+        r_distill = subprocess.run(
+            ["journalctl", "-u", svc, "--since", "today", "-n", "2", "--grep", "蒸馏"],
+            capture_output=True, text=True
+        )
         if r_distill.stdout.strip():
             last_line = r_distill.stdout.strip().split('\n')[-1]
             status_text = last_line.split(':')[-1].strip() if ':' in last_line else last_line
@@ -175,7 +177,7 @@ def _get_health_report() -> str:
         report.append(f"🧪 **记忆蒸馏复盘**: ⚠️ 日志读取异常 ({str(e)})")
 
     # 6. 系统底层守护进程
-    r = subprocess.run(f"systemctl is-active {svc}", shell=True, capture_output=True, text=True)
+    r = subprocess.run(["systemctl", "is-active", svc], capture_output=True, text=True)
     if r.stdout.strip() == 'active':
         report.append(f"⚙️ **Systemd 守护进程 ({svc})**: ✅ Active (作为系统级后台服务稳定运行中)")
     else:
