@@ -105,7 +105,9 @@ class FeishuChannel(BaseChannel):
                 if sender_id != str(admin_id):
                     is_guest = True
             else:
-                print("⚠️ [Feishu] admin_open_id is not configured! All incoming users will have full admin rights.")
+                # fail-closed: 未配置 admin 时, 所有外部用户按访客处理 (无 admin 权限), 而非 fail-open 全员管理员
+                is_guest = True
+                print("⚠️ [Feishu] admin_open_id is not configured! All incoming users treated as guest (no admin rights).")
 
             # 构建标准化的消息对象
             incoming = IncomingMessage(

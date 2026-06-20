@@ -37,7 +37,9 @@ class DingTalkChannel(BaseChannel):
                 if sender_id != str(admin_id):
                     is_guest = True
             else:
-                print("⚠️ [DingTalk] admin_staff_id is not configured! All incoming users will have full admin rights.")
+                # fail-closed: 未配置 admin 时, 所有外部用户按访客处理 (无 admin 权限), 而非 fail-open 全员管理员
+                is_guest = True
+                print("⚠️ [DingTalk] admin_staff_id is not configured! All incoming users treated as guest (no admin rights).")
 
             incoming = IncomingMessage(
                 channel='dingtalk',
