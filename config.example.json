@@ -126,7 +126,7 @@
         },
         "api": {
             "enabled": true,
-            "host": "0.0.0.0",
+            "host": "127.0.0.1",
             "port": 8887,
             "auth_token": "${API_AUTH_TOKEN}",
             "guest_token": "${API_GUEST_TOKEN}"
