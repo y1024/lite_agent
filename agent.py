@@ -787,6 +787,10 @@ class Agent:
                 if hasattr(ch, 'push_result'):
                     if ch.push_result(msg, response):
                         continue
+                    else:
+                        # push_result 返回 False 说明该通道没有来源消息上下文（跨通道广播）
+                        # 回退的 chat_id/message_id 只对来源通道有效，跨通道回退必然崩溃，直接跳过
+                        continue
                 if hasattr(ch, 'send_to'):
                     ch.send_to(msg.chat_id, response)
                 elif hasattr(ch, 'send_response'):
