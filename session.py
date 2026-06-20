@@ -17,12 +17,13 @@ class Session:
     """单个会话的状态"""
     key: str                                     # "feishu:ou_xxx"
     goal: str = ""                               # AI 提取的当前目标
-    status: str = "chatting"                     # chatting | working | done | expired
+    status: str = "chatting"                     # chatting | working | archived
     messages: List[Dict] = field(default_factory=list)  # [{role, content, ...}]
     tool_calls: int = 0                          # 本轮工具调用计数
     created_at: float = 0.0
     updated_at: float = 0.0
     token_usage: int = 0                         # 累计 token 消耗
+    kv_state: Dict = field(default_factory=dict)  # 跨 Skill 共享的中间状态 (OpenRath 状态追踪器)
 
 
 class SessionManager:
@@ -79,6 +80,11 @@ class SessionManager:
                 conn.execute("ALTER TABLE messages ADD COLUMN reasoning_content TEXT")
             except Exception:
                 pass
+            # kv_state: 跨 Skill 共享的中间状态 (JSON), OpenRath 状态追踪器理念
+            try:
+                conn.execute("ALTER TABLE sessions ADD COLUMN kv_state TEXT DEFAULT '{}'")
+            except Exception:
+                pass
             conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_session ON messages(session_key, created_at)")
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS goal_archive (
@@ -131,6 +137,11 @@ class SessionManager:
             # 2. 尝试从 SQLite 恢复
             session = self._restore_from_db(session_key)
             if session:
+                # 归档会话被重新激活: 重置回 chatting, 刷新 updated_at (跨 TTL 边界对话连续)
+                if session.status == "archived":
+                    session.status = "chatting"
+                    session.updated_at = time.time()
+                    self._persist_session(session)
                 self._cache[session_key] = session
                 return session
 
@@ -149,7 +160,7 @@ class SessionManager:
         """从 SQLite 恢复会话"""
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT goal, status, created_at, updated_at, tool_calls, token_usage "
+                "SELECT goal, status, created_at, updated_at, tool_calls, token_usage, kv_state "
                 "FROM sessions WHERE session_key = ?", (session_key,)
             ).fetchone()
             if not row:
@@ -164,6 +175,11 @@ class SessionManager:
                 tool_calls=row[4] or 0,
                 token_usage=row[5] or 0,
             )
+            # 恢复 kv_state (JSON)
+            try:
+                session.kv_state = json.loads(row[6]) if row[6] else {}
+            except (json.JSONDecodeError, TypeError):
+                session.kv_state = {}
 
             # 恢复消息历史
             msg_rows = conn.execute(
@@ -196,11 +212,12 @@ class SessionManager:
                     with self._connect() as conn:
                         conn.execute(
                             "INSERT OR REPLACE INTO sessions "
-                            "(session_key, goal, status, created_at, updated_at, tool_calls, token_usage) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            "(session_key, goal, status, created_at, updated_at, tool_calls, token_usage, kv_state) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                             (session.key, session.goal, session.status,
                              session.created_at, session.updated_at,
-                             session.tool_calls, session.token_usage)
+                             session.tool_calls, session.token_usage,
+                             json.dumps(session.kv_state, ensure_ascii=False))
                         )
                     return
                 except sqlite3.OperationalError as e:
@@ -403,6 +420,34 @@ class SessionManager:
             return session.tool_calls
 
     # ------------------------------------------------------------------
+    #  跨 Skill 状态共享 (kv_state, OpenRath 状态追踪器理念)
+    # ------------------------------------------------------------------
+    def set_state(self, session_key: str, key: str, value) -> None:
+        """存入一条跨 Skill 共享的中间状态 (如上游 Skill 的计算结果供下游使用)"""
+        with self._lock:
+            session = self.get_or_create(session_key)
+            session.kv_state[key] = value
+            session.updated_at = time.time()
+            self._persist_session(session)
+
+    def get_state(self, session_key: str, key: str, default=None):
+        """读取一条跨 Skill 共享的中间状态"""
+        with self._lock:
+            session = self.get_or_create(session_key)
+            return session.kv_state.get(key, default)
+
+    def del_state(self, session_key: str, key: str) -> bool:
+        """删除一条中间状态, 返回是否曾存在"""
+        with self._lock:
+            session = self.get_or_create(session_key)
+            existed = key in session.kv_state
+            if existed:
+                del session.kv_state[key]
+                session.updated_at = time.time()
+                self._persist_session(session)
+            return existed
+
+    # ------------------------------------------------------------------
     #  会话控制
     # ------------------------------------------------------------------
     def reset_session(self, session_key: str):
@@ -463,7 +508,12 @@ class SessionManager:
             return None
 
     def cleanup_expired(self):
-        """清理过期会话 (由外部定时调用)"""
+        """归档过期会话 (由外部定时调用)
+
+        软归档: 不再物理删除 messages, 仅把 session 标记为 archived。
+        用户下次发消息时 get_or_create 会恢复并重置回 chatting, 跨 TTL 边界对话记忆连续。
+        messages 行由 get_history 的 max_history 滑窗自然截断上下文, 无需为控制上下文而删数据。
+        """
         now = time.time()
         expired_keys = []
         with self._lock:
@@ -477,12 +527,15 @@ class SessionManager:
                 session = self._cache.pop(key, None)
                 if session and session.goal:
                     self.mark_done(key, "会话超时自动归档")
+                # 软归档: 保留 messages, 仅标记状态 (修复跨 TTL 失忆 bug)
                 with self._db_write_lock:
                     for attempt in range(3):
                         try:
                             with self._connect() as conn:
-                                conn.execute("DELETE FROM messages WHERE session_key = ?", (key,))
-                                conn.execute("DELETE FROM sessions WHERE session_key = ?", (key,))
+                                conn.execute(
+                                    "UPDATE sessions SET status='archived' WHERE session_key=?",
+                                    (key,)
+                                )
                             break
                         except sqlite3.OperationalError as e:
                             if "locked" in str(e).lower() and attempt < 2:
@@ -491,7 +544,7 @@ class SessionManager:
                             break
 
         if expired_keys:
-            print(f"🧹 已清理 {len(expired_keys)} 个过期会话")
+            print(f"🧹 已归档 {len(expired_keys)} 个过期会话 (消息保留)")
 
     def get_session_info(self, session_key: str) -> dict:
         """获取会话状态摘要 (供 /status 指令使用)"""
