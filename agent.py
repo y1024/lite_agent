@@ -144,7 +144,7 @@ class Agent:
         self.skill_engine = SkillEngine()
 
         # 安全限制
-        self.max_steps = session_cfg.get("max_steps_per_goal", 10)
+        self.max_steps = session_cfg.get("max_steps_per_goal", 30)
         self.daily_token_limit = session_cfg.get("daily_token_limit", 500000)
         self._dead_loop_counter = LRUCache(maxsize=200)  # session_key -> {tool_fingerprint -> count}
         self.orch_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="AgentOrch")
@@ -232,6 +232,7 @@ class Agent:
 - 发现异常时主动提醒并给出建议
 - 不要编造数据，一切以工具返回的真实结果为准。在生成最终答复时，必须完全忠实于工具返回的内容，严禁添加任何未查询到的虚假数据。对于任何你不确定的时效性事实、数据、新闻，你必须调用 `web_search` 进行联网搜索，严禁凭预训练记忆编造数据。
 - 如果系统提示中包含「从历史纠正中学到的工具/行为偏好」，在选工具前先检查是否匹配，匹配则严格遵循——不要重蹈用户已经纠正过的错误。
+- 选择工具的优先级：(1) 历史纠正中学到的偏好 (2) 领域专用工具（先搜索工具列表，找到语义匹配的专用工具直接调用）(3) ops_workspace_run 仅作最后手段。ops_workspace_run 每一步都要 LLM 生成代码→执行→读结果，成本高、步骤多、Token 消耗大；如果发现自己已经用 ops_workspace_run 走了 3 步以上仍未完成，说明大概率有专用工具被忽略了，应重新审视工具列表。
 - 如果工具返回错误，向用户解释原因并建议解决方案"""
 
     # ------------------------------------------------------------------
