@@ -170,6 +170,13 @@ class DingTalkChannel(BaseChannel):
             return False
         return False
 
+    def push_progress(self, msg, text: str) -> bool:
+        """镜像 push_result，专门处理 DingTalk 的进度异步推送。"""
+        msg_data = (msg.channel_payload or {}).get('msg_data')
+        if not msg_data:
+            return False
+        return self.send_progress(msg_data, text)
+
     def push_result(self, msg, response: AgentResponse) -> bool:
         """异步推送 DAG 编排结果 (修复: 用 channel_payload 里的 msg_data 取 sessionWebhook,
         而非把 message_id(str) 当 dict 传给 send_response)。"""

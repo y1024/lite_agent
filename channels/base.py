@@ -37,6 +37,13 @@ class BaseChannel(ABC):
         完成异步推送。子类按需覆盖; 默认返回 False 由调用方回退到 send_to/send_response。
         """
         return False
+
+    def push_progress(self, msg, text: str) -> bool:
+        """异步推送编排子任务的进度状态。
+        与 push_result 类似，可以利用 msg 里的 channel_payload 来避免上下文丢失。
+        默认返回 False，由调用方回退到 send_progress(msg.message_id, text)。
+        """
+        return False
     
     def format_card(self, title: str, content: str, color: str = 'blue') -> str:
         """将回复格式化为平台特定的卡片格式（子类可覆盖）"""
