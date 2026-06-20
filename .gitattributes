@@ -1,0 +1,5 @@
+# 强制 Python/JSON 文件用 LF 行尾, 避免 Windows 检出时 CRLF 污染 vps1
+*.py text eol=lf
+*.json text eol=lf
+*.sh text eol=lf
+*.env text eol=lf
