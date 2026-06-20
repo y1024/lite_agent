@@ -1,12 +1,11 @@
 import subprocess
 from skill_engine import skill
 
-def _run_bypy_cmd(cmd: str, timeout: int = 600) -> str:
+def _run_bypy_cmd(args: list, timeout: int = 600) -> str:
     """Helper to run bypy commands and return output"""
     try:
         result = subprocess.run(
-            cmd,
-            shell=True,
+            args,
             capture_output=True,
             text=True,
             timeout=timeout
@@ -25,7 +24,7 @@ def _run_bypy_cmd(cmd: str, timeout: int = 600) -> str:
     description='查看百度网盘的配额和当前使用情况'
 )
 def bypy_info() -> str:
-    return _run_bypy_cmd("bypy info", timeout=30)
+    return _run_bypy_cmd(["bypy", "info"], timeout=30)
 
 @skill(
     name='bypy_mkdir',
@@ -38,7 +37,7 @@ def bypy_info() -> str:
     }
 )
 def bypy_mkdir(remote_dir: str) -> str:
-    return _run_bypy_cmd(f"bypy mkdir {remote_dir}", timeout=60)
+    return _run_bypy_cmd(["bypy", "mkdir", remote_dir], timeout=60)
 
 @skill(
     name='bypy_syncup',
@@ -56,7 +55,7 @@ def bypy_mkdir(remote_dir: str) -> str:
 )
 def bypy_syncup(local_dir: str, remote_dir: str) -> str:
     # bypy syncup 会自动创建不存在的目标目录，并增量上传
-    return _run_bypy_cmd(f"bypy syncup {local_dir} {remote_dir}", timeout=3600)
+    return _run_bypy_cmd(["bypy", "syncup", local_dir, remote_dir], timeout=3600)
 
 @skill(
     name='bypy_syncdown',
@@ -73,4 +72,4 @@ def bypy_syncup(local_dir: str, remote_dir: str) -> str:
     }
 )
 def bypy_syncdown(remote_dir: str, local_dir: str) -> str:
-    return _run_bypy_cmd(f"bypy syncdown {remote_dir} {local_dir}", timeout=3600)
+    return _run_bypy_cmd(["bypy", "syncdown", remote_dir, local_dir], timeout=3600)

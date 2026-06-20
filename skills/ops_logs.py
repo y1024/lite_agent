@@ -33,15 +33,22 @@ def ops_read_logs(log_path: str, keyword: str = '', lines: int = 50) -> str:
         return f'❌ 不是一个有效的文件: {log_path}'
     
     try:
-        if keyword:
-            # 过滤关键字并取最后 N 行
-            cmd = f"grep -i '{keyword}' '{log_path}' | tail -n {lines}"
-        else:
-            # 直接取最后 N 行
-            cmd = f"tail -n {lines} '{log_path}'"
+        # 安全地读取日志文件的末尾行并在 Python 中过滤，避免 shell 注入
+        # 我们用 tail 读取比所需行数多 10 倍 (最少 1000 行) 的内容以供过滤，确保结果正确性
+        read_limit = max(lines * 10, 1000)
+        r = subprocess.run(["tail", "-n", str(read_limit), log_path], capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            return f"❌ 读取失败: {r.stderr.strip()}"
             
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
-        output = r.stdout.strip()
+        log_lines = r.stdout.splitlines()
+        if keyword:
+            keyword_lower = keyword.lower()
+            filtered = [line for line in log_lines if keyword_lower in line.lower()]
+        else:
+            filtered = log_lines
+            
+        output_lines = filtered[-lines:]
+        output = "\n".join(output_lines)
         
         if not output:
             if keyword:
@@ -81,14 +88,12 @@ def ops_read_journal(service_name: str, keyword: str = '', lines: int = 50) -> s
         return f'❌ 拒绝访问: 非法的服务名称 ({service_name})'
         
     try:
+        # 使用 journalctl 自带的 --grep 和 -n 限制，不使用 shell=True 以避免注入风险
+        args = ["journalctl", "-u", service_name, "--no-pager", "-n", str(lines)]
         if keyword:
-            # 过滤关键字并取最后 N 行
-            cmd = f"journalctl -u {service_name} --no-pager | grep -i '{keyword}' | tail -n {lines}"
-        else:
-            # 直接取最后 N 行
-            cmd = f"journalctl -u {service_name} --no-pager | tail -n {lines}"
+            args.extend(["--grep", keyword, "-i"])
             
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
+        r = subprocess.run(args, capture_output=True, text=True, timeout=10)
         output = r.stdout.strip()
         
         if not output:

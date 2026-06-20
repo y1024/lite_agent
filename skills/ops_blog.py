@@ -157,6 +157,11 @@ def blog_publish_article(title: str, content: str, status: str = 'PUBLISHED') ->
     }
 )
 def blog_export_articles(export_dir: str = '/root/blog_export') -> str:
+    # 路径遍历与系统关键目录访问防护
+    norm_dir = os.path.normpath(export_dir)
+    if '..' in norm_dir.split(os.sep) or norm_dir.startswith(('/etc', '/bin', '/sbin', '/var/log', '/boot', '/dev', '/proc', '/sys')):
+        return "❌ 拒绝访问: 非法的导出目录路径 (禁止导出到系统关键目录或向上跳跃)"
+
     try:
         res = _halo_request("GET", "/api/admin/posts?page=0&size=1000")
         if res.get("status") != 200:

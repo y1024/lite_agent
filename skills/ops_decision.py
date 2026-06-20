@@ -205,8 +205,15 @@ def ops_decision(task_type: str, topic: str, session_id: str = '', trace_id: str
     project_root = load_config().get("project_root", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     # 三层目录: data/committee/{task_type}/{trace_id or 'no_trace'}/{run_id}/audit.json
     # trace_id 把同一调用链路的多次表决聚到一起; 无 trace_id 归入 no_trace
-    trace_dir = trace_id.strip() or "no_trace"
-    audit_dir = os.path.join(project_root, "data", "committee", task_type, trace_dir, run_id)
+    import re
+    def sanitize_comp(comp: str) -> str:
+        return re.sub(r'[^a-zA-Z0-9_\-]', '_', comp.strip())
+
+    safe_task_type = sanitize_comp(task_type)
+    safe_trace_dir = sanitize_comp(trace_id) or "no_trace"
+    safe_run_id = sanitize_comp(run_id)
+
+    audit_dir = os.path.join(project_root, "data", "committee", safe_task_type, safe_trace_dir, safe_run_id)
     os.makedirs(audit_dir, exist_ok=True)
     audit_path = os.path.join(audit_dir, "audit.json")
     with open(audit_path, "w", encoding="utf-8") as f:

@@ -10,11 +10,12 @@ import re
 )
 def ops_list_crontab() -> str:
     try:
-        r = subprocess.run('crontab -l 2>/dev/null', shell=True, capture_output=True, text=True, timeout=5)
-        output = r.stdout.strip()
-        if not output:
-            return '当前用户没有配置 crontab 定时任务'
-        return output
+        r = subprocess.run(['crontab', '-l'], capture_output=True, text=True, timeout=5)
+        if r.returncode != 0:
+            if "no crontab" in r.stderr.lower():
+                return '当前用户没有配置 crontab 定时任务'
+            return f'❌ 获取失败: {r.stderr.strip()}'
+        return r.stdout.strip()
     except Exception as e:
         return f'❌ 获取失败: {e}'
 
@@ -42,14 +43,18 @@ def ops_run_script(script_path: str, args: str = '') -> str:
     
     ext = os.path.splitext(script_path)[1].lower()
     if ext == '.sh':
-        cmd = f"bash '{script_path}' {args}".strip()
+        cmd_list = ['bash', script_path]
     elif ext == '.py':
-        cmd = f"python3 '{script_path}' {args}".strip()
+        cmd_list = ['python3', script_path]
     else:
         return f'❌ 安全拦截: 不支持的脚本类型 {ext}，仅支持执行 .sh 和 .py 脚本'
     
+    import shlex
+    if args:
+        cmd_list.extend(shlex.split(args))
+    
     try:
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
+        r = subprocess.run(cmd_list, capture_output=True, text=True, timeout=60)
         output = r.stdout.strip()
         stderr = r.stderr.strip()
         
