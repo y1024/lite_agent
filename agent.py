@@ -131,6 +131,7 @@ class Agent:
         self.session_mgr = SessionManager(
             ttl_minutes=session_cfg.get("ttl_minutes", 30),
             max_history=session_cfg.get("max_history", 20),
+            max_history_bytes=session_cfg.get("max_history_bytes", 40000),
         )
         self.channels = []  # 由 main.py 在初始化通道后注入
 

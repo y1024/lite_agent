@@ -50,6 +50,7 @@
     "session": {
         "ttl_minutes": 30,
         "max_history": 20,
+        "max_history_bytes": 40000,
         "max_steps_per_goal": 30,
         "daily_token_limit": 500000
     },

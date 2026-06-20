@@ -34,7 +34,7 @@ class SessionManager:
     - 滑动窗口控制上下文长度
     """
 
-    def __init__(self, db_path: str = None, ttl_minutes: int = 30, max_history: int = 20):
+    def __init__(self, db_path: str = None, ttl_minutes: int = 30, max_history: int = 20, max_history_bytes: int = 40000):
         if db_path is None:
             base = os.path.dirname(os.path.abspath(__file__))
             db_path = os.path.join(base, "data", "sessions.db")
@@ -43,6 +43,7 @@ class SessionManager:
         self.db_path = db_path
         self.ttl_seconds = ttl_minutes * 60
         self.max_history = max_history
+        self.max_history_bytes = max_history_bytes
         self._cache: Dict[str, Session] = {}
         self._lock = threading.RLock()
         self._db_write_lock = threading.Lock()
@@ -303,61 +304,116 @@ class SessionManager:
                         break
             self._persist_session(session)
 
+    def _get_message_size(self, msg: dict) -> int:
+        size = 0
+        if msg.get("content"):
+            size += len(msg["content"])
+        if msg.get("reasoning_content"):
+            size += len(msg["reasoning_content"])
+        if msg.get("name"):
+            size += len(msg["name"])
+        if msg.get("tool_call_id"):
+            size += len(msg["tool_call_id"])
+        if "tool_calls" in msg:
+            for tc in msg["tool_calls"]:
+                if isinstance(tc, dict):
+                    func = tc.get("function", {})
+                    size += len(func.get("name", ""))
+                    size += len(func.get("arguments", ""))
+                else:
+                    size += len(str(tc))
+        return size
+
+    def _group_messages_to_blocks(self, messages: list) -> list:
+        id_to_block = {}
+        blocks = []
+        for msg in reversed(messages):
+            role = msg.get("role")
+            if role == "tool":
+                block = [msg]
+                blocks.append(block)
+                tcid = msg.get("tool_call_id")
+                if tcid:
+                    id_to_block[tcid] = block
+            elif role == "assistant" and "tool_calls" in msg:
+                associated_blocks = []
+                for tc in msg.get("tool_calls", []):
+                    tcid = tc.get("id") if isinstance(tc, dict) else None
+                    if tcid and tcid in id_to_block:
+                        associated_block = id_to_block[tcid]
+                        if associated_block not in associated_blocks:
+                            associated_blocks.append(associated_block)
+                new_block = [msg]
+                for ab in associated_blocks:
+                    new_block.extend(ab)
+                    blocks.remove(ab)
+                msg_to_index = {id(m): idx for idx, m in enumerate(messages)}
+                new_block.sort(key=lambda m: msg_to_index.get(id(m), 0))
+                blocks.append(new_block)
+            else:
+                blocks.append([msg])
+        
+        msg_to_index = {id(m): idx for idx, m in enumerate(messages)}
+        blocks.sort(key=lambda b: msg_to_index.get(id(b[0]), 0))
+        return blocks
+
     def get_history(self, session_key: str) -> list:
         """
         获取 OpenAI 兼容的消息历史列表
-        如果超出 max_history，只保留最新的 N 条
+        在 max_history 数量限制之外，额外增加 max_history_bytes 字节预算限制 (对 working 状态会话给予 3 倍预算空间)。
+        使用原子块 (atomic blocks) 算法防止孤儿 tool / assistant 消息。
         """
         session = self.get_or_create(session_key)
         messages = session.messages
 
-        if len(messages) <= self.max_history or session.status == "working":
-            truncated = list(messages)
-        else:
-            start_idx = max(0, len(messages) - self.max_history)
+        if not messages:
+            return []
 
-            # Phase 1: 寻找安全切割点 (user 或纯文本 assistant)
-            while start_idx < len(messages):
-                msg = messages[start_idx]
-                if msg["role"] == "user":
-                    break
-                if msg["role"] == "assistant" and "tool_calls" not in msg:
-                    break
-                start_idx += 1
+        # 决定当前会话的字节/字符预算 (working 会话放宽 3 倍限制以保留更多任务编排上下文)
+        max_bytes = self.max_history_bytes
+        if session.status == "working":
+            max_bytes = max_bytes * 3
 
-            if start_idx >= len(messages):
-                for i in range(len(messages) - 1, -1, -1):
-                    if messages[i]["role"] == "user":
-                        start_idx = i
-                        break
+        # 将消息按 tool_calls 完整性划分为原子块
+        blocks = self._group_messages_to_blocks(messages)
 
-            truncated = messages[start_idx:]
+        selected_blocks = []
+        current_size = 0
+        current_count = 0
 
-            # Phase 2: 孤儿 tool 消息检测
-            if truncated and truncated[0]["role"] == "tool":
-                for i in range(start_idx - 1, -1, -1):
-                    if messages[i]["role"] == "assistant" and "tool_calls" in messages[i]:
-                        start_idx = i
-                        truncated = messages[start_idx:]
-                        break
-                    elif messages[i]["role"] == "user":
-                        break
+        # 从最新消息往回累加，直到超出预算
+        for block in reversed(blocks):
+            block_size = sum(self._get_message_size(m) for m in block)
+            block_count = len(block)
 
-            if start_idx > 0:
-                truncated.insert(0, {
-                    "role": "system",
-                    "content": f"[系统提示: 之前有 {start_idx} 条早期对话已被压缩省略，以下是最近的对话]"
-                })
+            # 至少保留最后一个块 (防空)
+            if len(selected_blocks) > 0 and (current_size + block_size > max_bytes or current_count + block_count > self.max_history):
+                break
+
+            selected_blocks.append(block)
+            current_size += block_size
+            current_count += block_count
+
+        selected_messages = []
+        for block in reversed(selected_blocks):
+            selected_messages.extend(block)
+
+        start_idx = len(messages) - len(selected_messages)
+        if start_idx > 0:
+            selected_messages.insert(0, {
+                "role": "system",
+                "content": f"[系统提示: 之前有 {start_idx} 条早期对话已因超出容量/字节预算被省略，以下是最近的对话]"
+            })
 
         # Phase 3: 断电/重启造成的孤儿 tool_calls 清洗
         sanitized = []
-        for i, msg in enumerate(truncated):
+        for i, msg in enumerate(selected_messages):
             if msg["role"] == "assistant" and "tool_calls" in msg:
                 # 检查紧跟的下一条消息是不是 tool
                 is_broken = False
-                if i == len(truncated) - 1:
+                if i == len(selected_messages) - 1:
                     is_broken = True
-                elif truncated[i+1]["role"] != "tool":
+                elif selected_messages[i+1]["role"] != "tool":
                     is_broken = True
                 
                 if is_broken:
