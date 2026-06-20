@@ -4,14 +4,14 @@
         "base_url": "https://api.deepseek.com/v1",
         "api_key": "${DEEPSEEK_API_KEY}",
         "model": "deepseek-v4-flash",
-        "max_tokens": 2048,
+        "max_tokens": 8192,
         "temperature": 0.3,
         "models": {
             "flash": {
                 "base_url": "https://api.deepseek.com/v1",
                 "api_key": "${DEEPSEEK_API_KEY}",
                 "model": "deepseek-v4-flash",
-                "max_tokens": 2048,
+                "max_tokens": 8192,
                 "max_steps": 30,
                 "tags": [
                     "text",
@@ -33,7 +33,7 @@
             },
             "gemini-pro": {
                 "api_key": "${GEMINI_API_KEY}",
-                "model": "gemini-2.5-flash",
+                "model": "gemini-3.1-pro-preview",
                 "max_tokens": 8192,
                 "temperature": 0.1,
                 "max_steps": 30,
@@ -41,6 +41,30 @@
                 "tags": [
                     "gemini",
                     "code",
+                    "complex_reasoning"
+                ]
+            },
+            "doubao-pro": {
+                "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+                "api_key": "${ARK_API_KEY}",
+                "model": "doubao-seed-2.0-pro",
+                "max_tokens": 8192,
+                "temperature": 0.2,
+                "max_steps": 30,
+                "tags": [
+                    "text",
+                    "complex_reasoning"
+                ]
+            },
+            "glm-5.2": {
+                "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+                "api_key": "${ARK_API_KEY}",
+                "model": "glm-5.2",
+                "max_tokens": 8192,
+                "temperature": 0.2,
+                "max_steps": 30,
+                "tags": [
+                    "text",
                     "complex_reasoning"
                 ]
             }
@@ -52,7 +76,7 @@
         "max_history": 20,
         "max_history_bytes": 40000,
         "max_steps_per_goal": 30,
-        "daily_token_limit": 500000
+        "daily_token_limit": 5000000
     },
     "security": {
         "allowed_users": [],
@@ -62,7 +86,7 @@
             "/root/script",
             "/root/cert",
             "/root/alert",
-            "/home/liteagent/mail-statement-parser"
+            "/root/mail-statement-parser"
         ],
         "blocked_commands": [
             "rm -rf /",
@@ -91,20 +115,21 @@
             "enabled": true,
             "client_id": "dingb2eadjfacycy1kuk",
             "client_secret": "${DINGTALK_CLIENT_SECRET}",
-            "admin_staff_id": "manager123"
+            "admin_staff_id": "0159465607-607470790"
         },
         "wecom": {
             "enabled": true,
             "push_url": "http://127.0.0.1:6969/send_message",
             "push_token": "${WECOM_PUSH_TOKEN}",
-            "listen_port": 8899
+            "listen_port": 8899,
+            "admin_userid": "ChenLi"
         },
         "api": {
             "enabled": true,
             "host": "0.0.0.0",
             "port": 8887,
             "auth_token": "${API_AUTH_TOKEN}",
-            "guest_token": "guest_123456"
+            "guest_token": "${API_GUEST_TOKEN}"
         }
     },
     "rssdb": {
@@ -117,7 +142,7 @@
     "v2ex": {
         "token": "${V2EX_TOKEN}"
     },
-    "project_root": "/root/lite_agent",
+    "project_root": "/home/liteagent/lite_agent",
     "cron_jobs": [
         {
             "name": "证书过期检查",
@@ -154,6 +179,14 @@
             "name": "每日健康巡检广播",
             "time": "23:50",
             "skill": "ops_self_check::daily_health"
+        },
+        {
+            "name": "安全体检 (Sentinel)",
+            "time": "04:30",
+            "skill": "ops_sentinel::sentinel_scan",
+            "kwargs": {
+                "mode": "quick"
+            }
         }
     ],
     "service_name": "lite-agent",
@@ -214,13 +247,18 @@
         "enabled": true,
         "internal_url": "http://127.0.0.1:3030",
         "public_url": "https://md.maifeipin.com",
-        "email": "liteagent@bot.com",
+        "email": "bot2@bot.com",
         "password": "${HEDGEDOC_PASSWORD}"
+    },
+    "rssadapter": {
+        "url": "http://100.103.70.97:5216",
+        "description": "Mac Tailscale RssAdapter with Playwright"
     },
     "committee": {
         "models": [
             "gemini-pro",
-            "flash"
+            "flash",
+            "glm-5.2"
         ],
         "task_profiles": {
             "price_comparison": {
@@ -257,5 +295,5 @@
             }
         }
     },
-    "edge_token": ""
+    "edge_token": "${EDGE_TOKEN}"
 }
