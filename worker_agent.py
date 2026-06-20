@@ -61,7 +61,8 @@ class WorkerAgent:
         allowlist = set(self.tools_allowlist)
         return [t for t in all_tools if t["function"]["name"] in allowlist]
 
-    def _build_prompt(self, subtask: Subtask, upstream: dict = None) -> str:
+    def _build_prompt(self, subtask: Subtask, upstream: dict = None,
+                      goal: str = None, global_strategy: str = None) -> str:
         tools_desc = self.skill_engine.list_skills_filtered(self.tools_allowlist)
         ctx_block = ""
         if upstream:
@@ -72,34 +73,52 @@ class WorkerAgent:
                 "\n\n上游子任务结果（参考上下文）:\n" + "\n\n".join(ctx_lines)
             )
 
+        goal_block = ""
+        if goal:
+            goal_block = f"## 总体目标 (北极星目标)\n{goal}\n"
+
+        strategy_block = ""
+        if global_strategy:
+            strategy_block = (
+                f"## 全局战略 (由 Planner 制定，本 DAG 所有 Worker 共享)\n"
+                f"{global_strategy}\n"
+                f"⚠️ 严格在以上战略框架内执行当前子任务，不要偏离或自行扩大范围。\n"
+            )
+
         return f"""你是 {self.name}，专门处理 {subtask.type.value} 类任务。
 
-当前子任务: {subtask.name}
+{goal_block}{strategy_block}
+## 当前子任务
+{subtask.name}: {subtask.prompt}
 {ctx_block}
 
 可用工具:
 {tools_desc}
 
 规则:
-- 只处理当前子任务，不越界
+- 严格在全局战略框架内执行，不要偏离
+- 你的输出将被下游子任务消费，请确保结果完整可用
+- 如果某工具连续失败 2 次，改用备选方案，不要死磕
 - 需要工具时直接调用，返回结果后继续推理
 - 完成后给出清晰的结果总结
 - 不要编造数据，以工具返回的真实结果为准"""
 
     def run(self, subtask: Subtask, upstream: dict = None,
-            images: list = None) -> str:
+            images: list = None, goal: str = None,
+            global_strategy: str = None) -> str:
         if self.provider == "gemini":
-            return self._run_gemini(subtask, upstream, images)
-        return self._run_openai(subtask, upstream, images)
+            return self._run_gemini(subtask, upstream, images, goal, global_strategy)
+        return self._run_openai(subtask, upstream, images, goal, global_strategy)
 
     # ==================================================================
     #  OpenAI 路径 (原有)
     # ==================================================================
     def _run_openai(self, subtask: Subtask, upstream: dict = None,
-                    images: list = None) -> str:
+                    images: list = None, goal: str = None,
+                    global_strategy: str = None) -> str:
         system_msg = {
             "role": "system",
-            "content": self._build_prompt(subtask, upstream),
+            "content": self._build_prompt(subtask, upstream, goal, global_strategy),
         }
         messages = [system_msg]
 
@@ -118,6 +137,7 @@ class WorkerAgent:
 
         for step in range(self.max_steps):
             try:
+                subtask.steps_used += 1
                 actual_model = self.model_cfg.get("model", self.model_name)
                 kwargs = {"model": actual_model, "messages": messages}
 
@@ -199,10 +219,11 @@ class WorkerAgent:
     #  Gemini 路径 (google-genai)
     # ==================================================================
     def _run_gemini(self, subtask: Subtask, upstream: dict = None,
-                    images: list = None) -> str:
+                    images: list = None, goal: str = None,
+                    global_strategy: str = None) -> str:
         from google.genai import types
 
-        system_text = self._build_prompt(subtask, upstream)
+        system_text = self._build_prompt(subtask, upstream, goal, global_strategy)
         gemini_model = self.model_cfg.get("model", self.model_name)
 
         tool_names = self.tools_allowlist if self.tools_allowlist else None
@@ -228,6 +249,7 @@ class WorkerAgent:
 
         for step in range(self.max_steps):
             try:
+                subtask.steps_used += 1
                 response = self.client.models.generate_content(
                     model=gemini_model,
                     contents=contents,

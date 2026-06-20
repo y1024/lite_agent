@@ -32,15 +32,40 @@ class Subtask:
     result: str = ""
     error: str = ""
     token_usage: int = 0
+    steps_used: int = 0
     started_at: float = 0.0
     finished_at: float = 0.0
 
 
 class SubtaskDAG:
 
-    def __init__(self, subtasks: list[Subtask]):
+    def __init__(self, subtasks: list[Subtask], global_strategy: str = "",
+                 max_depth: int = None):
         self.subtasks: dict[str, Subtask] = {s.id: s for s in subtasks}
+        self.global_strategy = global_strategy
         self._validate_no_cycle()
+        if max_depth is not None:
+            self._validate_max_depth(max_depth)
+
+    def _validate_max_depth(self, max_depth: int):
+        memo = {}
+
+        def get_depth(node_id):
+            if node_id in memo:
+                return memo[node_id]
+            node = self.subtasks.get(node_id)
+            if not node or not node.depends_on:
+                return 1
+            max_dep = 0
+            for dep in node.depends_on:
+                max_dep = max(max_dep, get_depth(dep))
+            memo[node_id] = max_dep + 1
+            return memo[node_id]
+
+        for sid in self.subtasks:
+            dep_depth = get_depth(sid)
+            if dep_depth > max_depth:
+                raise ValueError(f"DAG depth exceeds limit: {dep_depth} > {max_depth}")
 
     def _validate_no_cycle(self):
         visited = set()
@@ -110,7 +135,8 @@ class SubtaskDAG:
             "total": total,
         }
 
-    def to_dict(self) -> list[dict]:
+    def to_dict(self) -> dict:
+        """序列化为 dict 包装格式, 包含 global_strategy 和 subtasks 列表"""
         result = []
         for s in self.subtasks.values():
             result.append({
@@ -125,13 +151,29 @@ class SubtaskDAG:
                 "result": s.result[:1000] if s.result else "",
                 "error": s.error,
                 "token_usage": s.token_usage,
+                "steps_used": s.steps_used,
             })
-        return result
+        return {
+            "global_strategy": self.global_strategy,
+            "subtasks": result,
+        }
 
     @classmethod
-    def from_dict(cls, data: list[dict]) -> "SubtaskDAG":
+    def from_dict(cls, data) -> "SubtaskDAG":
+        """反序列化, 向后兼容旧 list 格式和新 dict 格式"""
+        # 向后兼容: 旧格式是纯 list, 新格式是 {"global_strategy": ..., "subtasks": [...]}
+        if isinstance(data, list):
+            subtask_list = data
+            global_strategy = ""
+        elif isinstance(data, dict):
+            subtask_list = data.get("subtasks", [])
+            global_strategy = data.get("global_strategy", "")
+        else:
+            subtask_list = []
+            global_strategy = ""
+
         subtasks = []
-        for item in data:
+        for item in subtask_list:
             subtasks.append(Subtask(
                 id=item["id"],
                 name=item["name"],
@@ -144,5 +186,6 @@ class SubtaskDAG:
                 result=item.get("result", ""),
                 error=item.get("error", ""),
                 token_usage=item.get("token_usage", 0),
+                steps_used=item.get("steps_used", 0),
             ))
-        return cls(subtasks)
+        return cls(subtasks, global_strategy=global_strategy)

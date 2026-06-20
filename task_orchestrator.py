@@ -21,6 +21,7 @@ PLANNER_PROMPT = """你是一个任务编排专家。请将以下用户目标拆
 
 请输出严格的 JSON，格式如下:
 {{
+  "global_strategy": "本次任务的全局战略描述 (StraTA 范式): 关键路径是什么、哪些子任务可以并行、遇到什么情况应该 fallback、各子任务之间如何衔接。这段战略会被注入到每一个 Worker 的系统提示中, 确保所有执行者对齐目标不跑偏。",
   "subtasks": [
     {{
       "id": "sub_1",
@@ -43,12 +44,15 @@ PLANNER_PROMPT = """你是一个任务编排专家。请将以下用户目标拆
 编排规则:
 1. 尽可能让无依赖的子任务并行，depends_on 写依赖的 id
 2. 深度不超过 5 层
-3. tools_hint 写该子任务需要的工具名 (从上方"可用的全部工具"里按 name 选)。
+3. global_strategy 必须写: 先分析目标的本质和关键路径, 再给出执行战略。战略要具体可操作,
+   例如"先搜索再整理再发布"、"如果搜索失败 2 次则跳过该数据源改用已有知识"。
+   不要写空洞的"要认真执行"、"要高质量完成"。
+4. tools_hint 写该子任务需要的工具名 (从上方"可用的全部工具"里按 name 选)。
    务必积极填写: 若子任务是"上传到hedgedoc/网页剪藏"就写 web_clip, 是"读写待办"
    就写 todo_add/todo_list/todo_get, 是"搜网页"就写 web_search。不要图省事写空数组——
    写对专用工具可让执行者直接复用, 避免自己写代码逆向摸索浪费大量 token。
    不确定的才写空数组。
-4. 每个子任务 prompt 要具体、可执行"""
+5. 每个子任务 prompt 要具体、可执行"""
 
 
 class TaskOrchestrator:
@@ -67,8 +71,10 @@ class TaskOrchestrator:
         self.max_parallel = routing.get("max_parallel_subtasks", 3)
         self.subtask_timeout = routing.get("subtask_timeout_minutes", 15) * 60
         self.max_depth = routing.get("dag_max_depth", 5)
+        self.dag_max_steps = routing.get("dag_max_total_steps", 30)
+        self.dag_max_tokens = routing.get("dag_max_total_tokens", 200000)
         self.executor = ThreadPoolExecutor(max_workers=self.max_parallel, thread_name_prefix="OrchWorker")
-        print(f"  [ORCH] 初始化完成 planner={self.planner_model} classifier={self.classifier_model} parallel={self.max_parallel}")
+        print(f"  [ORCH] 初始化完成 planner={self.planner_model} classifier={self.classifier_model} parallel={self.max_parallel} max_steps={self.dag_max_steps} max_tokens={self.dag_max_tokens}")
 
     # ==================================================================
     #  Phase 1: 拆解
@@ -78,7 +84,8 @@ class TaskOrchestrator:
         cfg = self.router.models_cfg.get(model_key, {})
         return cfg.get("model", model_key)
 
-    def _plan(self, goal: str) -> list[Subtask]:
+    def _plan(self, goal: str) -> tuple:
+        """返回 (subtasks: list[Subtask], global_strategy: str)"""
         print(f"  [ORCH:PLAN] 规划中... model={self.planner_model}")
         planner_client = self.router.get_client(self.planner_model)
         if not planner_client:
@@ -111,6 +118,7 @@ class TaskOrchestrator:
             print(f"  ✅ [LLM Response] 耗时: {time.time()-start_t:.2f}s, Tokens: {response.usage.total_tokens if response.usage else 0}")
             raw = response.choices[0].message.content
             parsed = self._parse_json(raw)
+            global_strategy = parsed.get("global_strategy", "")
             subtasks = []
             for item in parsed.get("subtasks", []):
                 st_type = SubtaskType(item.get("type", "text"))
@@ -122,15 +130,15 @@ class TaskOrchestrator:
                     depends_on=item.get("depends_on", []),
                     tools=item.get("tools_hint", []),
                 ))
-            print(f"  [ORCH:PLAN] 拆解完成: {len(subtasks)} 个子任务")
-            return subtasks
+            print(f"  [ORCH:PLAN] 拆解完成: {len(subtasks)} 个子任务, strategy={len(global_strategy)} chars")
+            return subtasks, global_strategy
         except Exception as e:
             traceback.print_exc()
             print(f"  ⚠️ 规划失败, 降级为单任务: {e}")
             return [Subtask(
                 id="sub_0", name=goal[:40], type=SubtaskType.TEXT,
                 prompt=goal, tools=[]
-            )]
+            )], ""
 
     def _parse_json(self, raw: str) -> dict:
         raw = raw.strip()
@@ -172,21 +180,44 @@ class TaskOrchestrator:
         print(f"{'='*60}")
 
         self.session_mgr.save_subtask_dag(session_key, task_id,
-            json.dumps([], ensure_ascii=False), "planning")
+            json.dumps({"global_strategy": "", "subtasks": []}, ensure_ascii=False), "planning")
 
-        subtasks = self._plan(goal)
+        subtasks, global_strategy = self._plan(goal)
         if not subtasks:
             return "❌ 任务规划失败，无法拆解目标"
+
+        if global_strategy:
+            print(f"  🧭 全局战略: {global_strategy[:120]}...")
 
         self._classify_and_route(subtasks)
 
         for s in subtasks:
             print(f"  📋 {s.id} [{s.type.value}] → {s.assigned_model} : {s.name}")
 
-        dag = SubtaskDAG(subtasks)
+        dag = SubtaskDAG(subtasks, global_strategy=global_strategy, max_depth=self.max_depth)
         self._persist_dag(session_key, task_id, dag)
 
         while not dag.is_all_done():
+            # 全局预算限制检查
+            total_steps = sum(s.steps_used for s in dag.subtasks.values())
+            total_tokens = sum(s.token_usage for s in dag.subtasks.values())
+
+            if total_steps >= self.dag_max_steps:
+                print(f"  ⚠️ DAG 全局步数预算耗尽 ({total_steps}/{self.dag_max_steps})")
+                for s in dag.subtasks.values():
+                    if s.status == SubtaskStatus.PENDING:
+                        s.status = SubtaskStatus.SKIPPED
+                        s.error = f"全局步数预算耗尽，未执行 (已用 {total_steps} 步)"
+                break
+
+            if total_tokens >= self.dag_max_tokens:
+                print(f"  ⚠️ DAG 全局 Token 预算耗尽 ({total_tokens}/{self.dag_max_tokens})")
+                for s in dag.subtasks.values():
+                    if s.status == SubtaskStatus.PENDING:
+                        s.status = SubtaskStatus.SKIPPED
+                        s.error = f"全局 Token 预算耗尽，未执行 (已用 {total_tokens} tokens)"
+                break
+
             ready = dag.get_ready()
 
             if not ready and not dag.is_all_done():
@@ -222,7 +253,7 @@ class TaskOrchestrator:
 
                 future = self.executor.submit(
                     self._run_single_subtask,
-                    subtask, upstream, results, results_lock
+                    subtask, upstream, results, results_lock, goal, global_strategy
                 )
                 futures.append(future)
 
@@ -235,6 +266,7 @@ class TaskOrchestrator:
                     node.status = SubtaskStatus(result["status"])
                     node.error = result.get("error", "")
                     node.token_usage = result.get("token_usage", 0)
+                    node.steps_used = result.get("steps_used", 0)
 
             if dag.has_failure():
                 failed = [sid for sid, s in dag.subtasks.items()
@@ -256,7 +288,8 @@ class TaskOrchestrator:
         return self._aggregate(dag, goal)
 
     def _run_single_subtask(self, subtask: Subtask, upstream: dict,
-                            results: dict, lock: threading.Lock):
+                            results: dict, lock: threading.Lock,
+                            goal: str = "", global_strategy: str = ""):
         try:
             print(f"  [WORKER:{subtask.id}] 启动 model={subtask.assigned_model} allowlist={subtask.tools[:3] if subtask.tools else 'all'}...")
             client = self.router.get_client(subtask.assigned_model)
@@ -281,7 +314,8 @@ class TaskOrchestrator:
                 tools_allowlist=subtask.tools if subtask.tools else None,
                 provider=self.router.get_provider(subtask.assigned_model),
             )
-            result_text = worker.run(subtask, upstream)
+            result_text = worker.run(subtask, upstream,
+                                     goal=goal, global_strategy=global_strategy)
             subtask.finished_at = time.time()
 
             with lock:
@@ -289,8 +323,9 @@ class TaskOrchestrator:
                     "result": result_text,
                     "status": "done",
                     "token_usage": subtask.token_usage,
+                    "steps_used": subtask.steps_used,
                 }
-            print(f"  [WORKER:{subtask.id}] 完成 tokens={subtask.token_usage} result_len={len(result_text)}")
+            print(f"  [WORKER:{subtask.id}] 完成 steps={subtask.steps_used} tokens={subtask.token_usage} result_len={len(result_text)}")
         except Exception as e:
             traceback.print_exc()
             error_text = str(e)
@@ -311,13 +346,15 @@ class TaskOrchestrator:
                         tools_allowlist=subtask.tools if subtask.tools else None,
                         provider=self.router.get_provider(fb_name),
                     )
-                    result_text = worker_fb.run(subtask, upstream)
+                    result_text = worker_fb.run(subtask, upstream,
+                                                goal=goal, global_strategy=global_strategy)
                     subtask.finished_at = time.time()
                     with lock:
                         results[subtask.id] = {
                             "result": result_text,
                             "status": "done",
                             "token_usage": subtask.token_usage,
+                            "steps_used": subtask.steps_used,
                         }
                     return
                 except Exception:
@@ -330,6 +367,7 @@ class TaskOrchestrator:
                     "status": "failed",
                     "error": error_text,
                     "token_usage": subtask.token_usage,
+                    "steps_used": subtask.steps_used,
                 }
 
     # ==================================================================
