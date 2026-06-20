@@ -773,6 +773,9 @@ class Agent:
                 if ch.name != msg.channel:
                     continue
                 try:
+                    # 优先用 push_progress (携带完整 msg 以免除上下文丢失)
+                    if hasattr(ch, 'push_progress') and ch.push_progress(msg, text):
+                        continue
                     if hasattr(ch, 'send_progress'):
                         ch.send_progress(msg.message_id, text)
                 except Exception as e:
