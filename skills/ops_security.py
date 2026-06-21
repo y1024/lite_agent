@@ -18,6 +18,17 @@ import re
 )
 def ops_security_audit(hours: int = 24) -> str:
     sections = []
+    import socket
+    try:
+        hostname = socket.gethostname()
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        hostname, ip = "(获取失败)", "(获取失败)"
+    
+    sections.append(f"=== 主机信息 ===\n主机名: {hostname}\n内网IP: {ip}\n")
     
     # 1. 成功登录
     sections.append("=== 最近10次成功登录 ===")

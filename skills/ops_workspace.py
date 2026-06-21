@@ -36,7 +36,19 @@ def ops_workspace_run(code: str, timeout: int = 30) -> str:
         output = r.stdout.strip()
         if r.stderr.strip():
             output += '\n\n[stderr]:\n' + r.stderr.strip()
-        return output or f'(无输出, 退出码: {r.returncode})'
+            
+        import socket
+        try:
+            hostname = socket.gethostname()
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+        except Exception:
+            hostname, ip = "unknown", "unknown"
+            
+        header = f"=== 机器指纹: {hostname} ({ip}) ===\n"
+        return header + (output or f'(无输出, 退出码: {r.returncode})')
     except subprocess.TimeoutExpired:
         return f'执行超时 ({timeout}s)，已强制终止'
     except Exception as e:
