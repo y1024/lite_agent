@@ -15,3 +15,8 @@ deploy/
 secrets/
 *.secret
 *.secret.*
+
+# Additional sensitive patterns
+*.env
+*.conf
+vps*.json
