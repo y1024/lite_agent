@@ -58,9 +58,7 @@ def validate_cmd(cmd: str, whitelist: list) -> tuple:
     allow_files = set(entry.get("allow_files", []))
 
     # 带 value 的 flag 集合: 凡出现在 allow_args 里、且程序语义需要接 value 的 flag。
-    # 这里采用通用约定: -i / --interface / --since / -u / -k 等长/短 flag 后跟一个 token 视为其 value。
-    # 为避免为每个命令维护"value flag"清单,采用白名单侧声明 value_flags。
-    value_flags = set(entry.get("value_flags", ["-i", "--interface", "--since", "-u", "-k", "--unit"]))
+    value_flags = set(entry.get("value_flags", []))
 
     i = 1
     while i < len(tokens):
@@ -70,21 +68,33 @@ def validate_cmd(cmd: str, whitelist: list) -> tuple:
             if i + 1 >= len(tokens):
                 return False, f"flag '{tok}' 缺少参数"
             value = tokens[i + 1]
+            
+            # 特例: -n 允许纯数字
+            if tok == "-n" and value.isdigit():
+                i += 2
+                continue
+                
             # value 可能是网卡(-i eth0 → allow_if) 也可能是时间字面量(--since '1 hour ago' → allow_args)
-            # 各命令的允许集本就是定制的, 并集仍受控
             if value not in allow_if and value not in allow_args:
                 return False, f"flag '{tok}' 的参数 '{value}' 不在 allow_if/allow_args 允许集"
             i += 2
             continue
+            
         if tok in allow_args:
             i += 1
             continue
-        if allow_files and tok in allow_files:
-            i += 1
-            continue
-        # 位置参 (非 flag 开头) 且命令声明了 allow_files —— 必须在 allow_files
-        if allow_files and not tok.startswith("-"):
-            return False, f"文件参数 '{tok}' 不在 allow_files 白名单 (防 cat /etc/shadow)"
+            
+        # 位置参 (非 flag 开头) 逻辑
+        if not tok.startswith("-"):
+            if allow_if and tok in allow_if:
+                i += 1
+                continue
+            if allow_files and tok in allow_files:
+                i += 1
+                continue
+            if allow_files:
+                return False, f"文件/位置参数 '{tok}' 不在 allow_files/allow_if 白名单 (防越权)"
+                
         return False, f"参数 '{tok}' 不在允许集 (allow_args/allow_if/allow_files)"
 
     return True, "ok"
