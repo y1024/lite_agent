@@ -40,7 +40,11 @@ LOOKBACK = "1 hour ago"  # SSH 登录快照回看窗口
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 EXECUTED_DB = os.path.join(SCRIPT_DIR, "executed.db")
 WHITELIST_FILE = os.path.join(SCRIPT_DIR, "whitelist.json")
-TS_WINDOW_SEC = 60
+# ts 防重放窗口。防重放主防线是 nonce 去重(_nonce_record), ts 仅辅助时钟检查。
+# 放宽到 600s 是为覆盖 fleet_audit 批量场景: 25 条任务排队, 边缘 cron 每分钟拉 1 条,
+# 第 5 条要等 ~5 分钟才被拉到, 60s 窗口会让排队任务 ts 全部过期被拒(非时钟漂移)。
+# 600s 覆盖 5 命令×60s 排队 + 余量, 不影响 nonce 主防线的重放保护。
+TS_WINDOW_SEC = 600
 EXEC_TIMEOUT = 30
 
 
