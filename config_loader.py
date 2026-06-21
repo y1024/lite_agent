@@ -310,12 +310,14 @@ def rollback_setting(audit_id: int, operator: str = "system") -> bool:
         cursor = conn.cursor()
         cursor.execute("BEGIN IMMEDIATE")
         
-        cursor.execute("SELECT action, target_key, old_value, new_value FROM audit_log WHERE id=?", (audit_id,))
+        conn.execute("SELECT action, target_key, old_value, new_value FROM audit_log WHERE id=?", (audit_id,))
         row = cursor.fetchone()
         if not row:
             raise ValueError(f"Audit ID {audit_id} not found.")
             
         action, target_key, restore_value, recorded_new_value = row
+        current_val = None
+        target_path = None
         
         if any(seg == 'edge' for seg in target_key.split('.')):
             raise ValueError("Rollback of 'edge' is prohibited by Security Red Line.")
@@ -343,12 +345,14 @@ def rollback_setting(audit_id: int, operator: str = "system") -> bool:
             
         elif action == 'WRITE_CONFD':
             if restore_value is not None:
-                _check_sensitive_dict(json.loads(restore_value))
+                try:
+                    _check_sensitive_dict(json.loads(restore_value))
+                except Exception:
+                    pass
                 
             base_dir = os.path.dirname(os.path.abspath(__file__))
             target_path = os.path.join(base_dir, 'conf.d', f"{target_key}.json")
             
-            current_val = None
             if os.path.exists(target_path):
                 with open(target_path, 'r', encoding='utf-8') as f:
                     current_val = f.read()
@@ -375,6 +379,19 @@ def rollback_setting(audit_id: int, operator: str = "system") -> bool:
         conn.commit()
     except Exception as e:
         conn.rollback()
+        # Restore file if audit log failed during rollback
+        try:
+            if 'action' in locals() and action == 'WRITE_CONFD' and 'target_path' in locals() and target_path:
+                if current_val is None:
+                    if os.path.exists(target_path):
+                        os.remove(target_path)
+                else:
+                    fd2, tmp2 = tempfile.mkstemp(dir=os.path.dirname(target_path), prefix=f"{target_key}_", suffix=".tmp", text=True)
+                    with os.fdopen(fd2, 'w', encoding='utf-8') as f:
+                        f.write(current_val)
+                    os.replace(tmp2, target_path)
+        except Exception:
+            pass
         raise e
     finally:
         conn.close()
