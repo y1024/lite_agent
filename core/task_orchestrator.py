@@ -118,11 +118,16 @@ class TaskOrchestrator:
                 model=actual_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
-                max_tokens=4096,
+                max_tokens=8192,
                 timeout=120.0,
             )
             print(f"  ✅ [LLM Response] 耗时: {time.time()-start_t:.2f}s, Tokens: {response.usage.total_tokens if response.usage else 0}")
-            raw = response.choices[0].message.content
+            choice = response.choices[0]
+            if choice.finish_reason == "length":
+                print(f"  ⚠️ Planner 输出达到 max_tokens 截断 (length)，直接触发降级")
+                raise ValueError("JSON output truncated due to max_tokens limit")
+
+            raw = choice.message.content
             parsed = self._parse_json(raw)
             global_strategy = parsed.get("global_strategy", "")
             subtasks = []
@@ -151,7 +156,11 @@ class TaskOrchestrator:
         if raw.startswith("```"):
             lines = raw.split("\n")
             raw = "\n".join(lines[1:-1])
-        return json.loads(raw)
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as e:
+            print(f"  ⚠️ JSON 解析失败: {e}")
+            raise ValueError(f"JSONDecodeError: {e}")
 
     # ==================================================================
     #  Phase 2: 分类 + 路由
