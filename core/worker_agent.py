@@ -68,10 +68,25 @@ class WorkerAgent:
         if upstream:
             ctx_lines = []
             for dep_id, dep_result in upstream.items():
-                ctx_lines.append(f"### {dep_id}\n{dep_result[:1500]}")
-            ctx_block = (
-                "\n\n上游子任务结果（参考上下文）:\n" + "\n\n".join(ctx_lines)
-            )
+                if isinstance(dep_result, dict):
+                    res_text = dep_result.get("result", "")
+                    tool_res = dep_result.get("tool_results", [])
+                    
+                    block = f"### {dep_id}\n[执行结论]:\n{res_text[:8000]}\n"
+                    if tool_res:
+                        block += "\n[工具调用明细]:\n"
+                        for tr in tool_res:
+                            block += f"- 工具 `{tr.get('name')}(args={tr.get('args')})`:\n返回数据: {str(tr.get('result', ''))}\n"
+                    ctx_lines.append(block)
+                else:
+                    # Legacy fallback for old string formats
+                    ctx_lines.append(f"### {dep_id}\n{str(dep_result)[:1500]}")
+                    
+            ctx_block = "\n\n上游子任务结果（参考上下文）:\n" + "\n\n".join(ctx_lines)
+            
+            # Total fan-in truncation to prevent context explosion (~16K+ tokens if CJK)
+            if len(ctx_block) > 24000:
+                ctx_block = ctx_block[:24000] + "\n\n... ⚠️ [上游已截断, 依赖的部分内容被省略] ..."
 
         goal_block = ""
         if goal:
@@ -105,17 +120,26 @@ class WorkerAgent:
 
     def run(self, subtask: Subtask, upstream: dict = None,
             images: list = None, goal: str = None,
-            global_strategy: str = None) -> str:
+            global_strategy: str = None) -> tuple[str, list]:
         if self.provider == "gemini":
             return self._run_gemini(subtask, upstream, images, goal, global_strategy)
         return self._run_openai(subtask, upstream, images, goal, global_strategy)
+
+    def _extract_tool_result(self, name: str, args: str, raw_result) -> dict:
+        from core.skill_engine import _cap_tool_result
+        res_str = str(raw_result)
+        return {
+            "name": name,
+            "args": args,
+            "result": _cap_tool_result(name, res_str, max_len=4000)
+        }
 
     # ==================================================================
     #  OpenAI 路径 (原有)
     # ==================================================================
     def _run_openai(self, subtask: Subtask, upstream: dict = None,
                     images: list = None, goal: str = None,
-                    global_strategy: str = None) -> str:
+                    global_strategy: str = None) -> tuple[str, list]:
         system_msg = {
             "role": "system",
             "content": self._build_prompt(subtask, upstream, goal, global_strategy),
@@ -134,6 +158,7 @@ class WorkerAgent:
             messages.append({"role": "user", "content": subtask.prompt})
 
         tools = self._get_tools()
+        extracted_tools = []
 
         for step in range(self.max_steps):
             try:
@@ -168,7 +193,7 @@ class WorkerAgent:
 
             except Exception as e:
                 traceback.print_exc()
-                return f"❌ LLM 调用失败: {e}"
+                return f"❌ LLM 调用失败: {e}", extracted_tools
 
             if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
                 tool_calls_data = [
@@ -192,7 +217,7 @@ class WorkerAgent:
                     if self._check_dead_loop(
                         tc.function.name, tc.function.arguments, messages
                     ):
-                        return self._dead_loop_msg(tc.function.name)
+                        return self._dead_loop_msg(tc.function.name), extracted_tools
 
                     print(
                         f"  🔧 [{self.name}] [{step + 1}/{self.max_steps}] "
@@ -201,6 +226,9 @@ class WorkerAgent:
                     result = self.skill_engine.execute(
                         tc.function.name, tc.function.arguments
                     )
+                    extracted_tools.append(self._extract_tool_result(
+                        tc.function.name, tc.function.arguments, result
+                    ))
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
@@ -211,16 +239,16 @@ class WorkerAgent:
 
             reply = choice.message.content or "(空回复)"
             messages.append({"role": "assistant", "content": reply})
-            return reply
+            return reply, extracted_tools
 
-        return "⚠️ 子任务执行步骤过多，已自动终止"
+        return "⚠️ 子任务执行步骤过多，已自动终止", extracted_tools
 
     # ==================================================================
     #  Gemini 路径 (google-genai)
     # ==================================================================
     def _run_gemini(self, subtask: Subtask, upstream: dict = None,
                     images: list = None, goal: str = None,
-                    global_strategy: str = None) -> str:
+                    global_strategy: str = None) -> tuple[str, list]:
         from google.genai import types
 
         system_text = self._build_prompt(subtask, upstream, goal, global_strategy)
@@ -247,6 +275,7 @@ class WorkerAgent:
                 ))
             contents = [types.Content(role="user", parts=parts)]
 
+        extracted_tools = []
         for step in range(self.max_steps):
             try:
                 subtask.steps_used += 1
@@ -268,10 +297,10 @@ class WorkerAgent:
                             raise
             except Exception as e:
                 traceback.print_exc()
-                return f"❌ Gemini 调用失败: {e}"
+                return f"❌ Gemini 调用失败: {e}", extracted_tools
 
             if not response.candidates:
-                return f"❌ Gemini 无候选回复 (可能是安全过滤或配额问题)"
+                return f"❌ Gemini 无候选回复 (可能是安全过滤或配额问题)", extracted_tools
 
             candidate = response.candidates[0]
 
@@ -283,8 +312,8 @@ class WorkerAgent:
                 if candidate.finish_reason and hasattr(candidate.finish_reason, 'name'):
                     finish_reason = candidate.finish_reason.name
                 if "STOP" in str(finish_reason).upper():
-                    return "(空回复 - 安全过滤)"
-                return f"❌ 异常终止: finish_reason={finish_reason}"
+                    return "(空回复 - 安全过滤)", extracted_tools
+                return f"❌ 异常终止: finish_reason={finish_reason}", extracted_tools
 
             has_function_call = False
             text_parts = []
@@ -309,13 +338,16 @@ class WorkerAgent:
                     args_json = json.dumps(args, ensure_ascii=False)
 
                     if self._check_dead_loop(name, args_json, None):
-                        return self._dead_loop_msg(name)
+                        return self._dead_loop_msg(name), extracted_tools
 
                     print(
                         f"  🔧 [{self.name}] [{step + 1}/{self.max_steps}] "
                         f"{name}({args_json[:80]})"
                     )
                     tool_result = self.skill_engine.execute(name, args_json)
+                    extracted_tools.append(self._extract_tool_result(
+                        name, args_json, tool_result
+                    ))
 
                     fn_response_part = types.Part.from_function_response(
                         name=name,
@@ -336,9 +368,9 @@ class WorkerAgent:
                 continue
 
             reply = "\n".join(text_parts) if text_parts else "(空回复)"
-            return reply
+            return reply, extracted_tools
 
-        return "⚠️ 子任务执行步骤过多，已自动终止"
+        return "⚠️ 子任务执行步骤过多，已自动终止", extracted_tools
 
     # ==================================================================
     #  共享工具方法
