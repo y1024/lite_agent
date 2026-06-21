@@ -89,6 +89,25 @@ class AgentResponse:
         self.task_id = task_id
 
 
+def _estimate_tokens(messages: list, completion_text: str) -> dict:
+    """流式下 provider 不返回 usage 时的本地估算兜底。
+    DeepSeek/Gemini/Doubao 的 tokenizer 与 cl100k_base 不同, 估算有偏差,
+    调用方应据此把 total_usage["estimated"] 置 True 以便审计区分。"""
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+        prompt_tokens = sum(len(enc.encode(m.get("content", "") or "")) for m in messages)
+        completion_tokens = len(enc.encode(completion_text or ""))
+        return {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens}
+    except Exception:
+        # tiktoken 未安装时退化为字符启发式 (误差更大, 但好过 0)
+        prompt_chars = sum(len((m.get("content", "") or "")) for m in messages)
+        comp_chars = len(completion_text or "")
+        pt = max(1, prompt_chars // 4)
+        ct = max(1, comp_chars // 4)
+        return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}
+
 # ============================================================
 #  Agent 核心
 # ============================================================
@@ -819,193 +838,282 @@ class Agent:
             valid.append(m)
         return valid
 
-    def _run_ai_loop(self, msg: IncomingMessage) -> AgentResponse:
-        """
-        Tool Call Loop:
-        发消息 -> AI 决策 -> 调工具 -> 结果回传 -> AI 继续 -> ... -> 最终回复
+    def handle_stream(self, msg: IncomingMessage):
+        """内部控制台 SSE 流式入口。
+        AI Loop 路径真流式; 指令 (::/)/编排等路径降级为单次 token 事件,
+        保持与 handle() 一致的路由语义。全程持 session 锁 (锁拆分留待后续 PR)。"""
+        lock = self._get_session_lock(msg.session_key)
+        with lock:
+            text = msg.text.strip()
+            if text.startswith("::"):
+                yield from self._wrap_sync_response(self._handle_double_colon(msg))
+                return
+            if text.startswith("/"):
+                yield from self._wrap_sync_response(self._handle_builtin(msg))
+                return
+            if not msg.is_guest and self._is_complex_task(text):
+                # 复杂任务: 仅流式回执, 真实结果仍由 _push_result 异步推送 (路径 C 不做 token 流)
+                yield from self._wrap_sync_response(self._run_orchestrated(msg))
+                return
+            yield from self._stream_ai_loop(msg)
+
+    def _wrap_sync_response(self, resp):
+        """把非流式 AgentResponse 包成单次 token + done 事件, 供 handle_stream 降级使用。"""
+        empty_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "estimated": False}
+        if resp is None:
+            yield {"type": "token", "delta": ""}
+        else:
+            yield {"type": "token", "delta": resp.text}
+        yield {"type": "done", "usage": empty_usage}
+
+    def _stream_ai_loop(self, msg: IncomingMessage):
+        """流式 AI Loop 生成器 (路径 B 真流式底座)。
+        yield 统一事件 dict, 供 handle_stream(SSE) 与 _run_ai_loop(兼容老接口) 共用。
+        事件类型: token / reasoning_token / tool_start / tool_result / done / error
         """
         session = self.session_mgr.get_or_create(msg.session_key)
-
-        # 添加用户消息
         self.session_mgr.add_message(msg.session_key, "user", msg.text)
 
-        # 获取所有可用工具 Schema
         if msg.is_guest:
             tools = self.skill_engine.get_guest_schemas()
         else:
             tools = self.skill_engine.get_all_schemas()
-
-        # 动态匹配并获取当前消息命中的所有技能防护提示词（循环外只运行一次）
         guard_prompts = self.skill_engine.get_guard_prompts(msg.text, is_guest=msg.is_guest)
 
-        for step in range(self.max_steps):
-            # 构建完整的消息列表
-            system_content = self._build_system_prompt(is_guest=msg.is_guest)
+        total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "estimated": False}
 
-            # 动态注入安全防幻觉提示词
+        for step in range(self.max_steps):
+            # ---- 构建消息 (与旧版一致) ----
+            system_content = self._build_system_prompt(is_guest=msg.is_guest)
             if guard_prompts:
                 system_content += "\n\n⚠️【数据忠实执行指令】:\n" + "\n".join(f"- {p}" for p in guard_prompts)
-
             messages = [{"role": "system", "content": system_content}]
-
-            # 注入长期记忆
             if self.memory:
-                memory_ctx = self.memory.before_reply(
-                    msg.session_key, msg.text
-                )
+                memory_ctx = self.memory.before_reply(msg.session_key, msg.text)
                 if memory_ctx:
                     messages[0]["content"] += memory_ctx
-
             messages.extend(self.session_mgr.get_history(msg.session_key))
             messages = self._validate_messages(messages)
 
-            # 日额度检查
+            # ---- 日额度拦截 ----
             if session.token_usage >= self.daily_token_limit:
-                print(f"  💸 日 Token 上限: {session.token_usage}/{self.daily_token_limit}")
                 warning = f"⚠️ 今日 Token 已达上限 ({self.daily_token_limit})，请明天再试\n当前累计: {session.token_usage}"
                 self.session_mgr.add_message(msg.session_key, "assistant", warning)
-                return AgentResponse(warning, title="💸 额度耗尽", color="red")
+                yield {"type": "error", "msg": warning}
+                yield {"type": "done", "usage": total_usage}
+                return
 
-            # 调用 LLM
+            # ---- 组装 kwargs (保留 Pro/reasoning 分支) ----
+            kwargs = {"model": self.model, "messages": messages}
+            is_pro = "pro" in self.model.lower() or "reasoner" in self.model.lower()
+            if is_pro:
+                kwargs["reasoning_effort"] = "high"
+                kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+            else:
+                kwargs["temperature"] = self.temperature
+                kwargs["max_tokens"] = self.max_tokens
+            if tools:
+                kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
+            kwargs["timeout"] = 600.0
+            kwargs["stream"] = True
+            kwargs["stream_options"] = {"include_usage": True}
+
+            print(f"  🧠 [LLM Stream] 角色: SyncAgent, 模型: {self.model}, 步骤: {step+1}/{self.max_steps}")
+            import time
+            import traceback
+            start_t = time.time()
+
             try:
-                kwargs = {
-                    "model": self.model,
-                    "messages": messages,
-                }
-                
-                # 特殊处理 deepseek-v4-pro 或带有 reasoning 需求的模型
-                if "pro" in self.model.lower() or "reasoner" in self.model.lower():
-                    kwargs["reasoning_effort"] = "high"
-                    kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
-                else:
-                    kwargs["temperature"] = self.temperature
-                    kwargs["max_tokens"] = self.max_tokens
-
-                if tools:
-                    kwargs["tools"] = tools
-                    kwargs["tool_choice"] = "auto"
-                import time
-                start_t = time.time()
-                print(f"  🧠 [LLM Request] 角色: SyncAgent, 模型: {self.model}")
-                kwargs["timeout"] = 600.0
-                response = self.client.chat.completions.create(**kwargs)
-                print(f"  ✅ [LLM Response] 耗时: {time.time()-start_t:.2f}s, Tokens: {response.usage.total_tokens if response.usage else 0}")
-                choice = response.choices[0]
-
-                # 更新 Token 消耗
-                if response.usage:
-                    self.session_mgr.log_api_usage(
-                        msg.session_key,
-                        self.model,
-                        response.usage.prompt_tokens,
-                        response.usage.completion_tokens,
-                        response.usage.total_tokens
-                    )
-
+                response_stream = self.client.chat.completions.create(**kwargs)
             except Exception as e:
                 error_msg = f"LLM 调用失败: {e}"
                 print(f"  ❌ {error_msg}")
                 traceback.print_exc()
-                return AgentResponse(error_msg, title="❌ AI 错误", color="red")
+                yield {"type": "error", "msg": error_msg}
+                yield {"type": "done", "usage": total_usage}
+                return
 
-            # ----- 情况 1: AI 要调用工具 -----
-            if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
-                # 保存 assistant 的 tool_calls 消息 (OpenAI 协议要求)
-                tool_calls_data = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
-                    }
-                    for tc in choice.message.tool_calls
-                ]
-                reasoning = getattr(choice.message, "reasoning_content", None)
-                self.session_mgr.add_message(
-                    msg.session_key, "assistant",
-                    choice.message.content or "",
-                    tool_calls_data=tool_calls_data,
-                    reasoning_content=reasoning,
-                )
+            # ---- 消费流: 累积 text/reasoning/tool_calls, 独立抓 usage ----
+            tool_calls_accumulator = {}
+            text_content = ""
+            reasoning_content = ""
+            step_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+            finish_reason = None
 
-                # 逐个执行工具
-                for tc in choice.message.tool_calls:
-                    self.session_mgr.increment_tool_calls(msg.session_key)
+            try:
+                for chunk in response_stream:
+                    # P0-1: usage 提取独立于 delta, 防止 "content+usage 同 chunk" 被吞
+                    if getattr(chunk, "usage", None):
+                        step_usage["prompt_tokens"] = chunk.usage.prompt_tokens or 0
+                        step_usage["completion_tokens"] = chunk.usage.completion_tokens or 0
+                        step_usage["total_tokens"] = chunk.usage.total_tokens or 0
 
-                    fingerprint = f"{tc.function.name}:{tc.function.arguments}"
-                    counter = self._dead_loop_counter.setdefault(msg.session_key, {})
-                    if fingerprint == counter.get("_last"):
-                        counter["_streak"] = counter.get("_streak", 1) + 1
-                    else:
-                        counter["_streak"] = 1
-                    counter["_last"] = fingerprint
+                    if not chunk.choices:
+                        continue
+                    choice0 = chunk.choices[0]
+                    if getattr(choice0, "finish_reason", None):
+                        finish_reason = choice0.finish_reason
+                    delta = choice0.delta
+                    if not delta:
+                        continue
 
-                    if counter["_streak"] >= 3:
-                        print(f"  🔄 死循环检测: {tc.function.name} 连续 {counter['_streak']} 次, 强制终止")
-                        warning = f"🔄 检测到工具 `{tc.function.name}` 连续重复调用 {counter['_streak']} 次，已自动终止以防止死循环"
-                        self.session_mgr.add_message(msg.session_key, "assistant", warning)
-                        self.session_mgr.mark_done(msg.session_key, "死循环自动终止")
-                        return AgentResponse(warning, title="🔄 死循环终止", color="orange")
+                    if getattr(delta, "content", None):
+                        text_content += delta.content
+                        yield {"type": "token", "delta": delta.content}
+                    if getattr(delta, "reasoning_content", None):
+                        reasoning_content += delta.reasoning_content
+                        yield {"type": "reasoning_token", "delta": delta.reasoning_content}
+                    if getattr(delta, "tool_calls", None):
+                        # P0-2: 分片逐字段补全, 防 None 覆盖
+                        for tc_delta in delta.tool_calls:
+                            idx = tc_delta.index if tc_delta.index is not None else 0
+                            acc = tool_calls_accumulator.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                            if getattr(tc_delta, "id", None):
+                                acc["id"] = tc_delta.id
+                            if getattr(tc_delta, "function", None):
+                                if getattr(tc_delta.function, "name", None):
+                                    acc["name"] = tc_delta.function.name
+                                if getattr(tc_delta.function, "arguments", None):
+                                    acc["arguments"] += tc_delta.function.arguments
+            except Exception as e:
+                error_msg = f"流式读取中断: {e}"
+                print(f"  ❌ {error_msg}")
+                traceback.print_exc()
+                yield {"type": "error", "msg": error_msg}
+                yield {"type": "done", "usage": total_usage}
+                return
 
-                    print(f"  🔧 [{step+1}/{self.max_steps}] "
-                          f"调用: {tc.function.name}({tc.function.arguments})")
+            print(f"  ✅ [LLM Stream] 耗时: {time.time()-start_t:.2f}s, 步骤Tokens: {step_usage['total_tokens']}")
 
-                    if msg.is_guest and not self.skill_engine.is_guest_ok(tc.function.name):
-                        print(f"  🚫 访客试图越权调用工具: {tc.function.name}")
-                        result = f"❌ 权限不足：当前账户为访客，无权调用工具 {tc.function.name}"
-                    else:
-                        result = self.skill_engine.execute(
-                            tc.function.name, tc.function.arguments
-                        )
+            # P1-4: usage 兜底 (provider 不支持 include_usage 时)
+            estimated_this_step = False
+            if step_usage["total_tokens"] == 0:
+                step_usage = _estimate_tokens(messages, text_content + reasoning_content)
+                estimated_this_step = True
 
-                    # 将工具结果添加到会话 (带 tool_call_id 关联)
-                    self.session_mgr.add_message(
-                        msg.session_key, "tool", result,
-                        tool_call_id=tc.id,
-                        name=tc.function.name,
+            # 记账: 保持与旧版 "每轮一次" 粒度一致
+            self.session_mgr.log_api_usage(
+                msg.session_key, self.model,
+                step_usage["prompt_tokens"], step_usage["completion_tokens"], step_usage["total_tokens"]
+            )
+            total_usage["prompt_tokens"] += step_usage["prompt_tokens"]
+            total_usage["completion_tokens"] += step_usage["completion_tokens"]
+            total_usage["total_tokens"] += step_usage["total_tokens"]
+            if estimated_this_step:
+                total_usage["estimated"] = True
+
+            # ---- 情况 1: 无工具调用 → 最终回复, 结束 ----
+            if not tool_calls_accumulator:
+                if not text_content.strip():
+                    # P1: 空 content 兜底 (上下文过长/max_tokens/安全过滤)
+                    text_content = (
+                        f"⚠️ 模型未生成有效回复 (finish_reason={finish_reason})。"
+                        f"\n\n这通常因为对话上下文累积过长或工具返回结果太大。"
+                        f"\n\n建议：发送 `/new` 开启新会话后重试，或用更精确的关键词缩小工具调用范围。"
                     )
+                self.session_mgr.add_message(msg.session_key, "assistant", text_content)
+                if session.status == "working":
+                    self.session_mgr.mark_done(msg.session_key, text_content[:200])
+                if self.memory:
+                    self.memory.after_reply(msg.session_key, '', msg.text, text_content, msg.channel)
+                yield {"type": "done", "usage": total_usage}
+                return
 
-                continue  # 回到循环顶部，让 AI 处理工具结果
+            # ---- 情况 2: 有工具调用 → 先存 assistant(tool_calls) 再执行 ----
+            # P0-2 收尾: provider 始终不发 id 时补一个, 保证 tool 消息 tool_call_id 可关联
+            for acc in tool_calls_accumulator.values():
+                if not acc["id"]:
+                    import uuid
+                    acc["id"] = f"call_{uuid.uuid4().hex[:8]}"
 
-            # ----- 情况 2: AI 直接给出文本回复 (任务完成或闲聊) -----
-            raw_content = choice.message.content
-            finish_reason = getattr(choice, "finish_reason", None) or "unknown"
-            if not raw_content:
-                # 空 content 通常是上下文过长 / max_tokens 用尽 / 安全过滤导致
-                # 给用户友好提示，而不是字面 "(空回复)"
-                print(f"  ⚠️ LLM 返回空 content (finish_reason={finish_reason}), 提示用户重置会话")
-                reply_text = (
-                    f"⚠️ 模型未生成有效回复 (finish_reason={finish_reason})。"
-                    f"\n\n这通常因为对话上下文累积过长或工具返回结果太大。"
-                    f"\n\n建议：发送 `/new` 开启新会话后重试，或用更精确的关键词缩小工具调用范围。"
+            tool_calls_data = []
+            for idx in sorted(tool_calls_accumulator):
+                acc = tool_calls_accumulator[idx]
+                tool_calls_data.append({
+                    "id": acc["id"], "type": "function",
+                    "function": {"name": acc["name"], "arguments": acc["arguments"]},
+                })
+            # 必须在执行工具前写入 assistant 消息 (tool 消息靠 tool_call_id 关联)
+            self.session_mgr.add_message(
+                msg.session_key, "assistant", text_content or "",
+                tool_calls_data=tool_calls_data,
+                reasoning_content=reasoning_content or None,
+            )
+
+            # 逐个执行工具
+            for idx in sorted(tool_calls_accumulator):
+                tc = tool_calls_accumulator[idx]
+
+                # P1-3: 死循环熔断 (搬移自旧版) — 命中即终止整个 loop
+                fingerprint = f"{tc['name']}:{tc['arguments']}"
+                counter = self._dead_loop_counter.setdefault(msg.session_key, {})
+                if fingerprint == counter.get("_last"):
+                    counter["_streak"] = counter.get("_streak", 1) + 1
+                else:
+                    counter["_streak"] = 1
+                counter["_last"] = fingerprint
+                if counter["_streak"] >= 3:
+                    warning = f"🔄 检测到工具 `{tc['name']}` 连续重复调用 {counter['_streak']} 次，已自动终止以防止死循环"
+                    self.session_mgr.add_message(msg.session_key, "assistant", warning)
+                    self.session_mgr.mark_done(msg.session_key, "死循环自动终止")
+                    yield {"type": "error", "msg": warning}
+                    yield {"type": "done", "usage": total_usage}
+                    return
+
+                self.session_mgr.increment_tool_calls(msg.session_key)
+                yield {"type": "tool_start", "name": tc["name"], "args": tc["arguments"]}
+
+                # 访客越权 (非异常但应标记 ok=False)
+                if msg.is_guest and not self.skill_engine.is_guest_ok(tc["name"]):
+                    print(f"  🚫 访客试图越权调用工具: {tc['name']}")
+                    result = f"❌ 权限不足：当前账户为访客，无权调用工具 {tc['name']}"
+                    ok = False
+                else:
+                    print(f"  🔧 [{step+1}/{self.max_steps}] 调用: {tc['name']}({tc['arguments']})")
+                    try:
+                        result = self.skill_engine.execute(tc["name"], tc["arguments"])
+                        ok = True
+                    except Exception as e:
+                        result = f"❌ 工具执行异常: {e}"
+                        ok = False
+
+                self.session_mgr.add_message(
+                    msg.session_key, "tool", result,
+                    tool_call_id=tc["id"], name=tc["name"],
                 )
-            else:
-                reply_text = raw_content
-            self.session_mgr.add_message(msg.session_key, "assistant", reply_text)
+                # P1-5: 截断过大 result 防撑爆前端 (session 里存全量, 事件里截断)
+                display = result if len(result) <= 1000 else result[:1000] + "...(截断)"
+                yield {"type": "tool_result", "name": tc["name"], "ok": ok, "result": display}
 
-            # 如果之前在执行目标，标记完成
-            if session.status == "working":
-                self.session_mgr.mark_done(msg.session_key, reply_text[:200])
+            # 工具结果已回传, 进入下一轮 loop
 
-            # 存入长期记忆 (异步)
-            if self.memory:
-                self.memory.after_reply(
-                    msg.session_key, '', msg.text, reply_text, msg.channel
-                )
-
-            title = f"🤖 {self.bot_name} [{session.tool_calls}/{self.max_steps}]" if session.status == "working" else f"🤖 {self.bot_name}"
-            return AgentResponse(reply_text, title=title, color="blue")
-
-        # 超出最大步骤数
+        # 超出最大步数
         warning = "⚠️ 任务执行步骤过多，已自动终止。请尝试拆分为更小的任务。"
         self.session_mgr.add_message(msg.session_key, "assistant", warning)
         self.session_mgr.mark_done(msg.session_key, "超出最大步骤数")
-
         if self.memory:
-            self.memory.after_reply(
-                msg.session_key, '', msg.text, warning, msg.channel
-            )
+            self.memory.after_reply(msg.session_key, '', msg.text, warning, msg.channel)
+        yield {"type": "error", "msg": warning}
+        yield {"type": "done", "usage": total_usage}
 
-        return AgentResponse(warning, title="⚠️ 任务终止", color="orange")
+    def _run_ai_loop(self, msg: IncomingMessage) -> AgentResponse:
+        """Tool Call Loop (兼容老接口): 消费 _stream_ai_loop 事件, 拼回 AgentResponse。
+        对 api.py / IM 通道零感知。中间的 tool_start/tool_result 事件被丢弃, 只保留最终文本。"""
+        final_text = ""
+        for event in self._stream_ai_loop(msg):
+            t = event.get("type")
+            if t == "token":
+                final_text += event["delta"]
+            elif t == "error":
+                return AgentResponse(event["msg"], title="❌ AI 错误", color="red")
+            # reasoning_token / tool_start / tool_result / done: 兼容老接口忽略
+
+        if not final_text.strip():
+            final_text = "⚠️ AI 完成了工具调用，但未返回任何文本。"
+
+        session = self.session_mgr.get_or_create(msg.session_key)
+        title = (f"🤖 {self.bot_name} [{session.tool_calls}/{self.max_steps}]"
+                 if session.status == "working" else f"🤖 {self.bot_name}")
+        return AgentResponse(final_text, title=title, color="blue")
+
