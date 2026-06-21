@@ -7,12 +7,14 @@ import time
 import copy
 import logging
 import tempfile
+from typing import Any
 
 _base_cache = None
 _sqlite_cache = {}
 _sqlite_ttl = 0
 _merged_cache = None
 _merged_ttl = 0
+_db_initialized = False
 
 SENSITIVE_SEGS = {'api_key', 'apikey', 'token', 'secret', 'password', 'passwd', 'credential', 'authorization', 'private_key', 'webhook'}
 
@@ -102,7 +104,7 @@ def _get_sqlite_overrides():
     db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'settings.db')
     if os.path.exists(db_path):
         try:
-            conn = sqlite3.connect(db_path, timeout=1.0)
+            conn = sqlite3.connect(db_path, timeout=5.0)
             cursor = conn.cursor()
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='settings'")
             if cursor.fetchone():
@@ -173,28 +175,33 @@ def bust_base_cache():
     _merged_ttl = 0
 
 def _init_db():
+    global _db_initialized
     db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'settings.db')
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    conn = sqlite3.connect(db_path, timeout=5.0)
-    cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS settings (
-                        key TEXT PRIMARY KEY,
-                        value TEXT
-                    )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS audit_log (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        action TEXT,
-                        target_key TEXT,
-                        old_value TEXT,
-                        new_value TEXT,
-                        operator TEXT,
-                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                    )''')
-    conn.commit()
-    conn.close()
+    if not _db_initialized:
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        conn = sqlite3.connect(db_path, timeout=5.0)
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('PRAGMA busy_timeout=5000')
+        cursor = conn.cursor()
+        cursor.execute('''CREATE TABLE IF NOT EXISTS settings (
+                            key TEXT PRIMARY KEY,
+                            value TEXT
+                        )''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS audit_log (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            action TEXT,
+                            target_key TEXT,
+                            old_value TEXT,
+                            new_value TEXT,
+                            operator TEXT,
+                            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                        )''')
+        conn.commit()
+        conn.close()
+        _db_initialized = True
     return db_path
 
-def write_setting(key: str, value: any, operator: str = "system") -> bool:
+def write_setting(key: str, value: Any, operator: str = "system") -> bool:
     """更新 SQLite 配置，附带安全审计与自动 TTL 驱逐。"""
     if any(seg == 'edge' for seg in key.split('.')):
         raise ValueError("Access to 'edge' configuration is strictly blocked by Security Red Line.")
@@ -258,10 +265,16 @@ def write_conf_d(module_name: str, data: dict, operator: str = "system") -> bool
         except Exception:
             pass
             
-    fd, tmp_path = tempfile.mkstemp(dir=conf_d_path, prefix=f"{module_name}_", suffix=".tmp", text=True)
-    with os.fdopen(fd, 'w', encoding='utf-8') as f:
-        f.write(new_val_str)
-    os.replace(tmp_path, target_path)
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=conf_d_path, prefix=f"{module_name}_", suffix=".tmp", text=True)
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(new_val_str)
+        os.replace(tmp_path, target_path)
+    except Exception as e:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise e
     
     try:
         db_path = _init_db()
@@ -275,6 +288,16 @@ def write_conf_d(module_name: str, data: dict, operator: str = "system") -> bool
         conn.close()
     except Exception as e:
         logging.warning(f"Failed to write audit_log for conf_d: {e}")
+        # P1-A: 审计失败必须回滚文件并抛异常，保证审计完整性
+        if old_val_str is None:
+            if os.path.exists(target_path):
+                os.remove(target_path)
+        else:
+            fd2, tmp2 = tempfile.mkstemp(dir=conf_d_path, prefix=f"{module_name}_", suffix=".tmp", text=True)
+            with os.fdopen(fd2, 'w', encoding='utf-8') as f:
+                f.write(old_val_str)
+            os.replace(tmp2, target_path)
+        raise RuntimeError(f"Audit log failed, config written to {target_path} was rolled back. Error: {e}")
         
     bust_base_cache()
     return True
@@ -287,14 +310,27 @@ def rollback_setting(audit_id: int, operator: str = "system") -> bool:
         cursor = conn.cursor()
         cursor.execute("BEGIN IMMEDIATE")
         
-        cursor.execute("SELECT action, target_key, old_value FROM audit_log WHERE id=?", (audit_id,))
+        cursor.execute("SELECT action, target_key, old_value, new_value FROM audit_log WHERE id=?", (audit_id,))
         row = cursor.fetchone()
         if not row:
             raise ValueError(f"Audit ID {audit_id} not found.")
             
-        action, target_key, restore_value = row
+        action, target_key, restore_value, recorded_new_value = row
+        
+        if any(seg == 'edge' for seg in target_key.split('.')):
+            raise ValueError("Rollback of 'edge' is prohibited by Security Red Line.")
         
         if action == 'WRITE_SQLITE':
+            if any(seg in SENSITIVE_SEGS for seg in target_key.split('.')):
+                raise ValueError(f"Rollback to sensitive key '{target_key}' via SQLite is prohibited.")
+                
+            cursor.execute("SELECT value FROM settings WHERE key=?", (target_key,))
+            curr_row = cursor.fetchone()
+            current_val = curr_row[0] if curr_row else None
+            
+            if current_val != recorded_new_value:
+                raise ValueError(f"The current value has been modified since this audit record. Rollback rejected. Please rollback the latest record.")
+                
             if restore_value is None:
                 cursor.execute("DELETE FROM settings WHERE key=?", (target_key,))
             else:
@@ -303,12 +339,23 @@ def rollback_setting(audit_id: int, operator: str = "system") -> bool:
             cursor.execute("""
                 INSERT INTO audit_log (action, target_key, old_value, new_value, operator)
                 VALUES (?, ?, ?, ?, ?)
-            """, ('ROLLBACK_SQLITE', target_key, '<rollback>', restore_value, f"rollback_{audit_id}_by_{operator}"))
+            """, ('ROLLBACK_SQLITE', target_key, current_val, restore_value, f"rollback_{audit_id}_by_{operator}"))
             
         elif action == 'WRITE_CONFD':
+            if restore_value is not None:
+                _check_sensitive_dict(json.loads(restore_value))
+                
             base_dir = os.path.dirname(os.path.abspath(__file__))
             target_path = os.path.join(base_dir, 'conf.d', f"{target_key}.json")
             
+            current_val = None
+            if os.path.exists(target_path):
+                with open(target_path, 'r', encoding='utf-8') as f:
+                    current_val = f.read()
+                    
+            if current_val != recorded_new_value:
+                raise ValueError(f"The current value has been modified since this audit record. Rollback rejected.")
+                
             if restore_value is None:
                 if os.path.exists(target_path):
                     os.remove(target_path)
@@ -321,7 +368,7 @@ def rollback_setting(audit_id: int, operator: str = "system") -> bool:
             cursor.execute("""
                 INSERT INTO audit_log (action, target_key, old_value, new_value, operator)
                 VALUES (?, ?, ?, ?, ?)
-            """, ('ROLLBACK_CONFD', target_key, '<rollback>', restore_value, f"rollback_{audit_id}_by_{operator}"))
+            """, ('ROLLBACK_CONFD', target_key, current_val, restore_value, f"rollback_{audit_id}_by_{operator}"))
         else:
             raise ValueError(f"Unsupported action for rollback: {action}")
             
