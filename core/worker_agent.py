@@ -125,7 +125,7 @@ class WorkerAgent:
             return self._run_gemini(subtask, upstream, images, goal, global_strategy)
         return self._run_openai(subtask, upstream, images, goal, global_strategy)
 
-    def _extract_tool_result(self, name: str, args: str, raw_result: Any) -> dict:
+    def _extract_tool_result(self, name: str, args: str, raw_result) -> dict:
         from core.skill_engine import _cap_tool_result
         res_str = str(raw_result)
         return {
