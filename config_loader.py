@@ -153,6 +153,19 @@ def load_config():
     _merged_ttl = now + 5.0
     return _merged_cache
 
+def _check_sensitive_dict(obj):
+    """递归检查字典或列表中是否包含敏感的键"""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if any(seg in SENSITIVE_SEGS for seg in k.split('.')):
+                raise ValueError(f"Writing to sensitive key '{k}' is prohibited.")
+            if any(seg == 'edge' for seg in k.split('.')):
+                raise ValueError("Access to 'edge' configuration is strictly blocked by Security Red Line.")
+            _check_sensitive_dict(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            _check_sensitive_dict(item)
+
 def bust_base_cache():
     """使 _base_cache 失效，下次加载时重新读取 config.json 和 conf.d/"""
     global _base_cache, _merged_ttl
@@ -194,7 +207,7 @@ def write_setting(key: str, value: any, operator: str = "system") -> bool:
     conn = sqlite3.connect(db_path, timeout=5.0)
     try:
         cursor = conn.cursor()
-        cursor.execute("BEGIN TRANSACTION")
+        cursor.execute("BEGIN IMMEDIATE")
         
         cursor.execute("SELECT value FROM settings WHERE key=?", (key,))
         row = cursor.fetchone()
@@ -221,8 +234,14 @@ def write_setting(key: str, value: any, operator: str = "system") -> bool:
 
 def write_conf_d(module_name: str, data: dict, operator: str = "system") -> bool:
     """将字典原子化写入 conf.d/{module_name}.json。"""
+    if not re.fullmatch(r'[a-zA-Z0-9_-]+', module_name):
+        raise ValueError(f"Invalid module name '{module_name}'. Must be alphanumeric with dashes or underscores.")
+        
     if module_name == 'edge':
         raise ValueError("Module 'edge' is protected and cannot be written via Web UI.")
+        
+    # 递归拦截敏感字典，防止将明文写进 conf.d 甚至 git 历史
+    _check_sensitive_dict(data)
         
     base_dir = os.path.dirname(os.path.abspath(__file__))
     conf_d_path = os.path.join(base_dir, 'conf.d')
@@ -247,6 +266,7 @@ def write_conf_d(module_name: str, data: dict, operator: str = "system") -> bool
     try:
         db_path = _init_db()
         conn = sqlite3.connect(db_path, timeout=5.0)
+        conn.execute("BEGIN IMMEDIATE")
         conn.execute("""
             INSERT INTO audit_log (action, target_key, old_value, new_value, operator)
             VALUES (?, ?, ?, ?, ?)
@@ -256,5 +276,64 @@ def write_conf_d(module_name: str, data: dict, operator: str = "system") -> bool
     except Exception as e:
         logging.warning(f"Failed to write audit_log for conf_d: {e}")
         
+    bust_base_cache()
+    return True
+
+def rollback_setting(audit_id: int, operator: str = "system") -> bool:
+    """一键根据 audit_id 回滚设置，自动判定回滚对象 (SQLite / conf.d) 并生成新的回滚审计日志。"""
+    db_path = _init_db()
+    conn = sqlite3.connect(db_path, timeout=5.0)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
+        
+        cursor.execute("SELECT action, target_key, old_value FROM audit_log WHERE id=?", (audit_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise ValueError(f"Audit ID {audit_id} not found.")
+            
+        action, target_key, restore_value = row
+        
+        if action == 'WRITE_SQLITE':
+            if restore_value is None:
+                cursor.execute("DELETE FROM settings WHERE key=?", (target_key,))
+            else:
+                cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (target_key, restore_value))
+            
+            cursor.execute("""
+                INSERT INTO audit_log (action, target_key, old_value, new_value, operator)
+                VALUES (?, ?, ?, ?, ?)
+            """, ('ROLLBACK_SQLITE', target_key, '<rollback>', restore_value, f"rollback_{audit_id}_by_{operator}"))
+            
+        elif action == 'WRITE_CONFD':
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            target_path = os.path.join(base_dir, 'conf.d', f"{target_key}.json")
+            
+            if restore_value is None:
+                if os.path.exists(target_path):
+                    os.remove(target_path)
+            else:
+                fd, tmp_path = tempfile.mkstemp(dir=os.path.join(base_dir, 'conf.d'), prefix=f"{target_key}_", suffix=".tmp", text=True)
+                with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                    f.write(restore_value)
+                os.replace(tmp_path, target_path)
+                
+            cursor.execute("""
+                INSERT INTO audit_log (action, target_key, old_value, new_value, operator)
+                VALUES (?, ?, ?, ?, ?)
+            """, ('ROLLBACK_CONFD', target_key, '<rollback>', restore_value, f"rollback_{audit_id}_by_{operator}"))
+        else:
+            raise ValueError(f"Unsupported action for rollback: {action}")
+            
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
+        
+    global _sqlite_ttl, _merged_ttl
+    _sqlite_ttl = 0
+    _merged_ttl = 0
     bust_base_cache()
     return True
