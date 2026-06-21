@@ -14,3 +14,6 @@ Do **not** copy the `edge_node` directory itself. Instead, copy all files *insid
 4. Setup a systemd service or cron job to run `python3 /opt/edge_sentinel/edge_sentinel.py`.
 
 *Note: The `__init__.py` file is only used by the central Lite Agent to import these modules as a package. It is ignored by the edge node.*
+
+### A Note on the `sys.path.insert` Hack
+Inside `edge_sentinel.py`, there is a line `sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))`. This might seem redundant since flattening puts the files in the same directory, and `import edge_crypto` works automatically when running `python edge_sentinel.py`. However, **do not remove this hack**. It acts as an insurance policy for alternative startup methods (e.g., `python -m`, certain systemd setups, or external imports) where the script's directory might not be natively added to `sys.path`.
