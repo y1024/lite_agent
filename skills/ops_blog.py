@@ -1,6 +1,6 @@
 import sys, os, json, time, urllib.request, urllib.error
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from skill_engine import skill
+from core.skill_engine import skill
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.json")
 # Store cached token globally to avoid re-login on every request
@@ -8,7 +8,7 @@ _cached_token = None
 
 def _get_halo_config():
     try:
-        import config_loader
+        from core import config_loader
         return config_loader.load_config().get("halo", {})
     except Exception:
         return {}

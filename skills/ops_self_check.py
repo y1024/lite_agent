@@ -10,13 +10,13 @@ import subprocess
 import time
 import json
 from datetime import datetime
-from skill_engine import skill
+from core.skill_engine import skill
 
 
 def _svc_name():
     try:
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        import config_loader
+        from core import config_loader
         return config_loader.load_config().get('service_name', 'feishu-bot')
     except Exception:
         return 'feishu-bot'
@@ -62,7 +62,7 @@ def _get_health_report() -> str:
     config_path = os.path.join(base_dir, 'config.json')
     if os.path.exists(config_path):
         try:
-            import config_loader
+            from core import config_loader
             cfg = config_loader.load_config()
             llm_key = cfg.get('llm', {}).get('api_key', '')
             if llm_key.startswith('sk-') and len(llm_key) > 10:
@@ -205,7 +205,7 @@ def _get_health_report() -> str:
     skill_dir = os.path.dirname(__file__)
     skill_files = len([f for f in os.listdir(skill_dir) if f.startswith('ops_') and f.endswith('.py')])
     try:
-        from skill_engine import _skill_registry
+        from core.skill_engine import _skill_registry
         skill_count = len(_skill_registry)
         report.append(f"🛠️ **技能引擎 (Skill Engine)**: ✅ 注册 {skill_count} 个工具 (来自 {skill_files} 个文件)")
     except ImportError:

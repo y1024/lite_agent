@@ -2,14 +2,14 @@ import sys, os
 import json
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from skill_engine import skill
+from core.skill_engine import skill
 
 _config = None
 
 def _media_config():
     global _config
     if _config is None:
-        import config_loader
+        from core import config_loader
         _config = config_loader.load_config()
     return _config.get('media', {})
 

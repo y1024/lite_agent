@@ -8,9 +8,9 @@ from typing import Callable, Optional
 
 from openai import OpenAI
 from core.model_router import ModelRouter
-from worker_agent import WorkerAgent
-from skill_engine import SkillEngine
-from subtask_dag import Subtask, SubtaskDAG, SubtaskType, SubtaskStatus
+from core.worker_agent import WorkerAgent
+from core.skill_engine import SkillEngine
+from core.subtask_dag import Subtask, SubtaskDAG, SubtaskType, SubtaskStatus
 
 PLANNER_PROMPT = """你是一个任务编排专家。请将以下用户目标拆解为子任务列表。
 

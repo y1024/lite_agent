@@ -11,8 +11,8 @@ import collections
 from concurrent.futures import ThreadPoolExecutor
 from openai import OpenAI
 from session import SessionManager
-from cron_engine import CronManager
-from skill_engine import SkillEngine
+from core.cron_engine import CronManager
+from core.skill_engine import SkillEngine
 
 class LRUCache:
     def __init__(self, maxsize=200):
@@ -728,7 +728,7 @@ class Agent:
 
 
     def _run_orchestrated(self, msg: IncomingMessage) -> AgentResponse:
-        from task_orchestrator import TaskOrchestrator
+        from core.task_orchestrator import TaskOrchestrator
         import uuid
         import re
 

@@ -3,12 +3,12 @@ import urllib.request
 import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from skill_engine import skill
+from core.skill_engine import skill
 
 def check_deepseek_balance() -> str:
     """内部函数：查询 DeepSeek 余额"""
     try:
-        import config_loader
+        from core import config_loader
         config = config_loader.load_config()
         api_key = config.get("llm", {}).get("api_key", "")
     except Exception as e:

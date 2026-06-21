@@ -1,6 +1,6 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from skill_engine import skill
+from core.skill_engine import skill
 import subprocess
 from collections import Counter
 import re

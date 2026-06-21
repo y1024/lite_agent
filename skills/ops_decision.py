@@ -6,8 +6,8 @@ import time
 import concurrent.futures
 from pydantic import BaseModel, Field
 from typing import List, Dict, Literal, Optional
-from skill_engine import skill
-from config_loader import load_config
+from core.skill_engine import skill
+from core.config_loader import load_config
 from core.model_router import ModelRouter
 
 # =========================================================

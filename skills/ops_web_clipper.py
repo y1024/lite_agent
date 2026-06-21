@@ -10,7 +10,7 @@ Web Clipper 技能 — 通过 RssAdapter (Mac) 的 Playwright 有头浏览器抓
 
 import sys, os, json, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from skill_engine import skill
+from core.skill_engine import skill
 
 # ============================================================
 #  配置
@@ -20,7 +20,7 @@ _config = None
 def _load_config():
     global _config
     if _config is None:
-        import config_loader
+        from core import config_loader
         _config = config_loader.load_config()
     return _config
 

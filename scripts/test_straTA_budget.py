@@ -26,7 +26,7 @@ if sys.platform == "win32":
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-from subtask_dag import Subtask, SubtaskDAG, SubtaskType, SubtaskStatus
+from core.subtask_dag import Subtask, SubtaskDAG, SubtaskType, SubtaskStatus
 
 _passed = 0
 _failed = 0
@@ -47,8 +47,8 @@ def check(name, cond):
 # ====================================================================
 def test_worker_prompt_welding():
     print("\n[1] Test: WorkerAgent prompt welding (goal + global_strategy)")
-    from worker_agent import WorkerAgent
-    from skill_engine import SkillEngine
+    from core.worker_agent import WorkerAgent
+    from core.skill_engine import SkillEngine
 
     se = SkillEngine()
     # 用 mock client 避免真实 API 调用
@@ -173,8 +173,8 @@ def test_dag_serialization_backward_compat():
 # ====================================================================
 def test_plan_parses_strategy():
     print("\n[4] Test: _plan parses global_strategy from planner JSON")
-    from task_orchestrator import TaskOrchestrator
-    import skill_engine
+    from core.task_orchestrator import TaskOrchestrator
+    from core import skill_engine
     se = skill_engine.SkillEngine()
 
     orch = TaskOrchestrator(

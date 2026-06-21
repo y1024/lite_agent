@@ -18,8 +18,8 @@ import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from skill_engine import skill
-from config_loader import load_config
+from core.skill_engine import skill
+from core.config_loader import load_config
 import edge_crypto
 import edge_db
 import edge_whitelist

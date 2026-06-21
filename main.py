@@ -22,7 +22,7 @@ def load_config() -> dict:
         print("💡 请复制 config.example.json 为 config.json 并修改相关配置")
         exit(1)
         
-    import config_loader
+    from core import config_loader
     return config_loader.load_config()
 
 

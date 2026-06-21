@@ -3,9 +3,9 @@ import time
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from skill_engine import skill
-from cron_engine import CronManager
-from config_loader import load_config
+from core.skill_engine import skill
+from core.cron_engine import CronManager
+from core.config_loader import load_config
 
 # 账单解析程序目录：与 ops_billing 共用 config.json 的 billing.script_dir，
 # 未配置时回退默认路径（vps1: /home/liteagent/mail-statement-parser）。

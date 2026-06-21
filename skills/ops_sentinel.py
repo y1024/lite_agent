@@ -8,7 +8,7 @@ import struct
 from datetime import datetime
 
 # In the actual script, we'll import skill from skill_engine
-from skill_engine import skill
+from core.skill_engine import skill
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'sentinel')
 BASELINE_FILE = os.path.join(DATA_DIR, 'baseline.json')

@@ -8,14 +8,14 @@ from typing import List, Dict, Optional
 
 # Add project root to path (so we can import skill_engine and config_loader)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from skill_engine import skill
+from core.skill_engine import skill
 
 _config = None
 
 def _load_config():
     global _config
     if _config is None:
-        import config_loader
+        from core import config_loader
         _config = config_loader.load_config()
     return _config
 

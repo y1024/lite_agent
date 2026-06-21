@@ -1,7 +1,7 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from skill_engine import skill
-from config_loader import load_config
+from core.skill_engine import skill
+from core.config_loader import load_config
 import subprocess
 
 # 账单解析程序目录：从 config.json 的 billing.script_dir 读取，未配置时回退默认路径。
@@ -164,7 +164,7 @@ def billing_txns_over(amount: float, months: int = 3) -> str:
 
 import sqlite3
 from datetime import datetime, timedelta
-from cron_engine import CronManager
+from core.cron_engine import CronManager
 
 @skill(
     name="billing_parse_health",

@@ -1,5 +1,5 @@
 import subprocess
-from skill_engine import skill
+from core.skill_engine import skill
 
 def _run_bypy_cmd(args: list, timeout: int = 600) -> str:
     """Helper to run bypy commands and return output"""

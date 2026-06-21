@@ -16,7 +16,7 @@ import os
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-from subtask_dag import Subtask, SubtaskType
+from core.subtask_dag import Subtask, SubtaskType
 
 _passed = 0
 _failed = 0

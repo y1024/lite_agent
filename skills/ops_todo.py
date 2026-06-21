@@ -7,8 +7,8 @@ import re
 from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from skill_engine import skill
-from cron_engine import CronManager
+from core.skill_engine import skill
+from core.cron_engine import CronManager
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data')
 DB_PATH = os.path.join(DATA_DIR, 'todos.db')

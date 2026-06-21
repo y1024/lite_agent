@@ -8,7 +8,7 @@ _config = None
 def _rss_config():
     global _config
     if _config is None:
-        import config_loader
+        from core import config_loader
         _config = config_loader.load_config()
     return _config
 
