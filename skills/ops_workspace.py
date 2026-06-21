@@ -41,7 +41,7 @@ def ops_workspace_run(code: str, timeout: int = 30) -> str:
         try:
             hostname = socket.gethostname()
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
+            s.connect(("223.5.5.5", 80))
             ip = s.getsockname()[0]
             s.close()
         except Exception:

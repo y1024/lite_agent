@@ -22,7 +22,7 @@ def ops_security_audit(hours: int = 24) -> str:
     try:
         hostname = socket.gethostname()
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
+        s.connect(("223.5.5.5", 80))  # 使用阿里 DNS 替代 8.8.8.8，UDP connect 不实际发包
         ip = s.getsockname()[0]
         s.close()
     except Exception:
