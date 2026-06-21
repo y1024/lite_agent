@@ -485,3 +485,16 @@ scp file.py vps1:/root/lite_agent/   # 部署单文件
 3. 在 `main.py` 加加载逻辑
 4. 在 `config.example.json` 加配置段
 5. 在 `_send_card()` 回退链加通道名
+
+---
+
+## 17. 架构演进与决策记录 (Memory Base)
+
+### PR3: AI 引擎真流式改造 (Streaming Engine)
+- **三层分流决策**:
+  - 路径 A (内置指令/子任务编排等): 保持非流式，最终通过 `_wrap_sync_response` 降级为单次 token 事件，维持统一接口。
+  - 路径 B (底层 AI 循环): `_stream_ai_loop` 实现真流式引擎底座，通过生成器实时 `yield` 标准化事件流 (token/reasoning/tool_start/tool_result/error/done)。
+  - 路径 C (老接口兼容): `_run_ai_loop` 消费路径 B，丢弃工具调用的中间状态，仅拼合最终文本，实现对上层旧通道的零感知兼容。
+- **参数兼容性实测**: `stream_options: {"include_usage": True}` 在 DeepSeek 与 Doubao 上实测完美兼容，均无 400 报错，末尾 chunk 正常返回 `usage`。`_estimate_tokens` (tiktoken) 仅作为 provider 未返回时的后备兜底。
+- **中间内容拼接实测**: 测试证实 LLM 决定发起工具调用的 stream 步骤中，`delta.content` 为空，不会混入如“我来查一下”等多余前置对话内容，免除了增加复杂标志位的需要。
+- **全程会话锁待收窄**: 当前 `handle_stream` 为确保安全采取全程持锁策略，同一会话的请求强制串行。这在单用户控制台模式下足够，但记录为后续待观测点：未来接入 Web 后，若观察到“⏳ 会话锁等待”高频触发，再进行锁粒度拆分。
